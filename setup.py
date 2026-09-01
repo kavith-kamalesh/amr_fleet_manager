@@ -19,6 +19,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'edge_slm_node = amr_fleet_manager.edge_slm_node:main',
             'central_dispatcher = amr_fleet_manager.central_dispatcher:main',
             'spatial_mutex = amr_fleet_manager.spatial_mutex:main',
             'orca_node = amr_fleet_manager.orca_node:main',
