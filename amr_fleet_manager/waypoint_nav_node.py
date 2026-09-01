@@ -30,7 +30,7 @@ class WaypointNavNode(Node):
         self.cmd_vel_pub = self.create_publisher(Twist, 'cmd_vel', 10)
         self.timer = self.create_timer(0.1, self.control_loop)
         
-        self.get_logger().info(f"Edge Nav Node with Dynamic Bypass initialized.")
+        self.get_logger().info("Edge Nav Node with Active Bypass Override initialized.")
 
     def odom_cb(self, msg: Odometry):
         self.current_x = msg.pose.pose.position.x + self.offset_x
@@ -48,14 +48,19 @@ class WaypointNavNode(Node):
         self.get_logger().info(f"New FMS Goal Received: ({self.goal_x}, {self.goal_y})")
 
     def mutex_cb(self, msg: String):
-        new_state = msg.data
-        # If blocked at intersection, trigger dynamic secondary route bypass instead of infinite wait
-        if new_state == "WAITING" and self.mutex_state != "WAITING" and not self.rerouted:
+        incoming_state = msg.data
+        
+        # When interaction happens and we get WAITING, override the halt 
+        # by instantly switching to the second shortest path and forcing CLEAR to drive around it.
+        if incoming_state == "WAITING" and not self.rerouted:
             if self.goal_y is not None:
-                self.get_logger().warn("Intersection deadlock detected! Computing second shortest bypass corridor...")
-                self.goal_y += 1.5  # Lateral shift to take secondary aisle
+                self.get_logger().warn("Intersection conflict! Bypassing halt, engaging second shortest path...")
+                self.goal_y += 1.5  # Lateral shift to take secondary corridor
                 self.rerouted = True
-        self.mutex_state = new_state
+                self.mutex_state = "CLEAR"  # Force unlock so it moves instead of halting
+                return
+                
+        self.mutex_state = incoming_state
 
     def control_loop(self):
         twist = Twist()
@@ -70,7 +75,7 @@ class WaypointNavNode(Node):
 
         if distance < 0.2:
             self.goal_x = None
-            self.get_logger().info("Target Bay Reached via Optimal/Bypass Route!")
+            self.get_logger().info("Target Bay Reached via Active Bypass!")
         else:
             target_yaw = math.atan2(dy, dx)
             yaw_error = target_yaw - self.current_yaw
@@ -81,7 +86,7 @@ class WaypointNavNode(Node):
             twist.angular.z = max(min(yaw_error * 1.5, 1.0), -1.0)
             
             if abs(yaw_error) < 0.5:
-                twist.linear.x = 0.2
+                twist.linear.x = 0.2  # Actively drive the secondary path
             else:
                 twist.linear.x = 0.0
 
