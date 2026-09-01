@@ -21,6 +21,10 @@ setup(
         'console_scripts': [
             'orca_node = amr_fleet_manager.orca_node:main',
             'safety_fallback = amr_fleet_manager.safety_fallback:main',
+            'central_dispatcher = amr_fleet_manager.central_dispatcher:main',
+            'spatial_mutex = amr_fleet_manager.spatial_mutex:main',
+            'waypoint_nav_node = amr_fleet_manager.waypoint_nav_node:main',
+            'edge_slm_node = amr_fleet_manager.edge_slm_node:main',
         ],
     },
 )
