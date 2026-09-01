@@ -66,8 +66,17 @@ class WaypointNavNode(Node):
         super().__init__('waypoint_nav_node')
         self.declare_parameter('robot_id', 1)
         self.declare_parameter('max_speed', 0.8)
+        # World-frame spawn offset: /odom is relative to each robot's own
+        # start pose, NOT the Gazebo world origin. Every raw odom reading
+        # must be shifted by this offset before it means anything in the
+        # shared grid/graph the algorithm plans over. Set these to match
+        # exactly the -x/-y values used in spawn_entity.py for this robot.
+        self.declare_parameter('spawn_offset_x', 0.0)
+        self.declare_parameter('spawn_offset_y', 0.0)
         self.robot_id = self.get_parameter('robot_id').value
         self.max_speed = self.get_parameter('max_speed').value
+        self.spawn_offset_x = self.get_parameter('spawn_offset_x').value
+        self.spawn_offset_y = self.get_parameter('spawn_offset_y').value
 
         qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE,
                           history=HistoryPolicy.KEEP_LAST, depth=10)
@@ -90,7 +99,14 @@ class WaypointNavNode(Node):
         self.get_logger().info(f"WaypointNav up for robot_id={self.robot_id} (namespaced)")
 
     def odom_callback(self, msg: Odometry):
-        self.current_pos = (msg.pose.pose.position.x, msg.pose.pose.position.y)
+        # Convert this robot's LOCAL odom reading into WORLD/grid coordinates
+        # by applying its spawn offset. Without this, every robot except the
+        # one spawned at the origin reports the wrong position to the shared
+        # grid/graph planner and the spatial mutex.
+        self.current_pos = (
+            msg.pose.pose.position.x + self.spawn_offset_x,
+            msg.pose.pose.position.y + self.spawn_offset_y,
+        )
 
     def goal_callback(self, msg: PoseStamped):
         start_node = to_node(*self.current_pos)

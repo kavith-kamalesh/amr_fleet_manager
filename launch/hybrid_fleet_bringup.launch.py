@@ -62,7 +62,11 @@ def generate_launch_description():
             executable='waypoint_nav_node',
             name='waypoint_nav_node',
             namespace=ns,
-            parameters=[{'robot_id': cfg['id']}],
+            parameters=[{
+                'robot_id': cfg['id'],
+                'spawn_offset_x': cfg['x'],
+                'spawn_offset_y': cfg['y'],
+            }],
             output='screen',
         ))
 
