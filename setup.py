@@ -19,6 +19,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'central_dispatcher = amr_fleet_manager.central_dispatcher:main',
+            'spatial_mutex = amr_fleet_manager.spatial_mutex:main',
             'orca_node = amr_fleet_manager.orca_node:main',
             'safety_fallback = amr_fleet_manager.safety_fallback:main',
             'central_dispatcher = amr_fleet_manager.central_dispatcher:main',
