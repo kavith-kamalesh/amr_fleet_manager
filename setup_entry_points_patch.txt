@@ -1,0 +1,8 @@
+Add these lines inside setup.py's entry_points -> console_scripts list:
+
+    'central_dispatcher = amr_fleet_manager.central_dispatcher:main',
+    'spatial_mutex = amr_fleet_manager.spatial_mutex:main',
+    'waypoint_nav_node = amr_fleet_manager.waypoint_nav_node:main',
+
+Keep the existing orca_node / safety_fallback / cmd_vel_mux entries too
+if you still want those available for reference/comparison.
