@@ -1,30 +1,3 @@
-"""
-Distributed Spatial Mutex (edge-side, decentralized)
-+ Low-Power State Syncing (Asymmetric Fleet Listening).
-
-Normal operation: negotiates intersection/edge locks peer-to-peer over
-/fleet/spatial_intent, exactly as before.
-
-New: when this robot's own /health_status reports CHARGING or
-SHIFT_CHANGE, it suspends its own outgoing intent broadcast and heavy
-conflict computation entirely, but keeps a second, deliberately
-lightweight subscription (QoS KEEP_LAST depth=1) to the same peer
-topic purely to log the latest known position of every active robot.
-On waking, it seeds that log into a local costmap-seed topic for
-instant situational awareness, and runs a Wi-Fi-drop fail-safe: if it
-received zero peer updates during the entire charging window, it
-requests a fleet-wide state resync before considering itself safe to
-move again.
-
-Note on "asymmetric halting": since spatial_intent is a shared
-broadcast topic (not point-to-point), true per-target suppression of
-"data aimed at robot A" isn't physically meaningful here. The
-equivalent, correctly-implemented behavior is: every ACTIVE robot
-learns which peers are charging (via /fleet/charging_robots) and
-immediately excludes them from conflict negotiation, so no bandwidth
-or CPU is spent waiting on a peer that isn't listening anyway.
-"""
-
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
@@ -147,8 +120,7 @@ class SpatialMutex(Node):
     # ---------------- Background (low-power) listener ----------------
 
     def background_peer_listener(self, msg: String):
-        """Always-on, cheap: just logs the latest known position of
-        every peer, regardless of this robot's own state."""
+        
         try:
             data = json.loads(msg.data)
             peer_id = data['id']
@@ -163,10 +135,7 @@ class SpatialMutex(Node):
         self.last_background_update_time = now
 
     def publish_costmap_seed(self):
-        """Feed the background-collected position log to the local
-        navigation stack (Nav2 costmap / waypoint_nav_node) so the
-        robot has instant situational awareness before its first move,
-        instead of starting with an empty map."""
+        
         payload = json.dumps({
             'robot_id': self.robot_id,
             'seed_source': 'background_low_power_log',
@@ -184,9 +153,7 @@ class SpatialMutex(Node):
         self.sync_request_pub.publish(String(data=payload))
 
     def state_sync_request_callback(self, msg: String):
-        """Peer-side handling: if another robot asks for a resync and
-        we are active with a current intent, republish it immediately
-        instead of waiting for the next scheduled tick."""
+        
         try:
             data = json.loads(msg.data)
             requester = data.get('requesting_robot')

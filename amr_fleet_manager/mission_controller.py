@@ -1,30 +1,3 @@
-"""
-Mission Controller with Dynamic Task Reallocation (Self-Healing Fleet)
-+ Low-Power State Syncing (Asymmetric Fleet Listening).
-
-Preserves the existing architecture:
-  - Namespace isolation: /robot1, /robot2, /robot3
-  - Inputs:  /{robot}/odom            (nav_msgs/msg/Odometry)
-  - Inputs:  /{robot}/health_status   (std_msgs/msg/String, JSON) -- ROBOT-OWNED
-             self-reported status channel (published by the robot's own
-             battery/shift-management logic, not by this node).
-  - Outputs: /{robot}/cmd_vel         (geometry_msgs/msg/Twist)
-  - Outputs: /{robot}/mission_status_summary (String) -- THIS node's own
-             narration of what it currently believes about each robot,
-             for dashboards. Kept as a separate topic from health_status
-             so there is exactly one publisher per topic and no
-             ambiguity about which channel is authoritative.
-  - Outputs: /fleet/charging_robots   (String, JSON list) -- low-frequency
-             aggregated broadcast so edge nodes (spatial_mutex) know
-             which peers are currently parked, without each of them
-             needing to subscribe to every other robot's health_status.
-
-State machine per robot: IDLE -> WORKING -> (IDLE | OFFLINE | CHARGING |
-SHIFT_CHANGE) -> IDLE. CHARGING/SHIFT_CHANGE are graceful, planned pauses
-(task is cleanly reallocated, robot is NOT considered failed); OFFLINE
-remains reserved for unplanned heartbeat loss.
-"""
-
 import math
 import time
 import json

@@ -1,28 +1,10 @@
-"""
-Shared constants, naming conventions, and data structures for the AMR
-fleet. Import from this module instead of hardcoding robot IDs, topic
-names, or frame names anywhere else in the package.
-
-This is the single source of truth for the hardware abstraction layer:
-the algorithm should only ever depend on these names, never on whether
-the underlying robot is a Gazebo simulation or a real Raspberry Pi AMR.
-"""
-
 # ---------------- Canonical robot identity ----------------
 
 ROBOT_IDS = ["robot1", "robot2", "robot3"]
 
 
 def robot_topic(robot_id: str, topic: str) -> str:
-    """
-    Build a namespaced topic name for a given robot.
-    robot_topic("robot1", "scan") -> "/robot1/scan"
-    Note: in ROS2, namespacing via launch already achieves this
-    automatically for nodes running inside that namespace -- this
-    helper is for cases where a node needs to explicitly address a
-    PEER robot's topic (e.g. cross-robot introspection/tools), not for
-    a robot's own topics.
-    """
+    
     return f"/{robot_id}/{topic}"
 
 
@@ -60,11 +42,7 @@ FLEET_INTERFACE = "fleet_comms"        # sim: ROS2 topics              | real: E
 # ---------------- Structured robot/fleet state ----------------
 
 class RobotState:
-    """
-    Canonical per-robot state object. Nodes that need to reason about
-    a robot's full state (position, velocity, task, health) should
-    build/consume this instead of passing scattered loose variables.
-    """
+    
 
     def __init__(self, robot_id: str):
         self.robot_id = robot_id
@@ -105,11 +83,7 @@ class RobotState:
 
 
 class FleetState:
-    """
-    Canonical fleet-wide state container. Central FMS or any
-    cross-robot logic should read/write through this rather than
-    maintaining separate ad-hoc dicts.
-    """
+    
 
     def __init__(self, robot_ids=None):
         self.robots = {rid: RobotState(rid) for rid in (robot_ids or ROBOT_IDS)}
@@ -122,7 +96,7 @@ class FleetState:
 
 
 class Task:
-    """Canonical task object for fleet-level task allocation."""
+    
 
     def __init__(self, task_id, task_type, location, priority=1, assigned_robot=None):
         self.task_id = task_id

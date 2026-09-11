@@ -11,13 +11,7 @@ import math
 
 
 class ORCANavigationNode(Node):
-    """
-    Tier 1: Decentralized ORCA with:
-      - real peer-agent ingestion (fixes single-agent bug)
-      - dead-reckoning velocity prediction for peers (not just hold-last)
-      - priority-weighted responsibility (asymmetric avoidance)
-      - deadlock tie-breaking via priority-based lateral nudge
-    """
+    
 
     def __init__(self):
         super().__init__('orca_nav_node')

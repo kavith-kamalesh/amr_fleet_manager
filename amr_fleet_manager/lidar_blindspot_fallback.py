@@ -1,18 +1,3 @@
-"""
-LiDAR blind-spot camera fallback.
-
-Scope, deliberately narrow: 2D LiDAR has known blind spots -- objects
-below/above its scan plane (low pallets, overhangs), and highly
-reflective/transparent surfaces (glass, mirrors, some plastic wrap)
-that scatter or pass the laser instead of reflecting it cleanly.
-
-This node does NOT run continuous YOLO inference. It only wakes the
-camera/YOLO check when LiDAR itself reports an ambiguous reading in the
-configured blind-spot zone -- "only log while rest don't process," per
-the original design note. This keeps it viable even on constrained
-hardware (Pi Zero 2W / Jetson Nano), unlike a full-time vision stream.
-"""
-
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
@@ -96,12 +81,7 @@ class LidarBlindspotFallback(Node):
         thread.start()
 
     def _has_ambiguous_reading(self, scan: LaserScan) -> bool:
-        """
-        Flags a scan as 'ambiguous' (possible blind-spot) when a
-        meaningful fraction of returns are exactly zero, NaN, or
-        max-range -- the classic signature of a reflective/transparent
-        surface or a scan angle passing over/under a real obstacle.
-        """
+        
         if not scan.ranges:
             return False
         suspicious = sum(

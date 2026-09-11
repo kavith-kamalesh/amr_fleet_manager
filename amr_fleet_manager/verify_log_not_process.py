@@ -1,13 +1,3 @@
-"""
-Quick verification that the background listener logs without
-triggering any conflict computation while a robot is parked.
-
-Usage: run this alongside a live spatial_mutex.py node in CHARGING
-state, publish a few fake /fleet/spatial_intent messages, and confirm:
-  - background_position_log grows
-  - mutex_clearance topic publishes NOTHING new (mutex_loop never ran)
-"""
-
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
