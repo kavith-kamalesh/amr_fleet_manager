@@ -5,6 +5,9 @@ from nav_msgs.msg import Odometry
 from std_msgs.msg import String
 import math
 import time
+import json
+import hmac
+import hashlib
 
 class WaypointNavNode(Node):
     def __init__(self):
@@ -20,6 +23,9 @@ class WaypointNavNode(Node):
         self.bypass_threshold = self.get_parameter('bypass_threshold_sec').value
         self.max_linear = self.get_parameter('max_linear').value
         
+        # Defense-Grade Cryptographic Key
+        self.fleet_secret = b"BEL_DEFENCE_SIH26123_SECURE_KEY"
+        
         self.current_x = self.current_y = self.current_yaw = 0.0
         self.has_pose = False
         self.goal_active = True
@@ -34,7 +40,7 @@ class WaypointNavNode(Node):
         self.publisher_cmd = self.create_publisher(Twist, 'cmd_vel', 10)
 
         self.timer = self.create_timer(0.1, self.control_loop)
-        self.get_logger().info("Time-Optimized Hybrid Waypoint Nav initialized.")
+        self.get_logger().info("Zero-Trust Waypoint Nav initialized. Cryptographic verification active.")
 
     def odom_callback(self, msg: Odometry):
         p = msg.pose.pose.position
@@ -48,29 +54,35 @@ class WaypointNavNode(Node):
         self.goal_active = True
         self.detour_active = False
         self.wait_start_time = None
-        self.get_logger().info(f"New primary goal: X={self.target_x:.2f}, Y={self.target_y:.2f}")
 
     def mutex_callback(self, msg: String):
-        self.mutex_state = msg.data
+        try:
+            payload = json.loads(msg.data)
+            state = payload.get("state", "")
+            signature = payload.get("signature", "")
+            
+            # Verify cryptographic signature
+            expected_sig = hmac.new(self.fleet_secret, state.encode(), hashlib.sha256).hexdigest()
+            
+            if hmac.compare_digest(expected_sig, signature):
+                self.mutex_state = state
+            else:
+                self.get_logger().error("SECURITY BREACH: Invalid signature! Dropping spoofed mutex command.")
+        except json.JSONDecodeError:
+            self.get_logger().warn("SECURITY WARNING: Dropping unencrypted plaintext mutex command.")
 
     def trigger_dynamic_detour(self):
-        dx = self.target_x - self.current_x
-        dy = self.target_y - self.current_y
+        dx, dy = self.target_x - self.current_x, self.target_y - self.current_y
         dist = math.hypot(dx, dy)
-        
         if dist > 0.1:
-            # Tighter 1.0m bypass to save time compared to previous 1.5m
             perp_x, perp_y = -dy / dist, dx / dist
             self.target_x += perp_x * 1.0
             self.target_y += perp_y * 1.0
             self.detour_active = True
             self.wait_start_time = None
-            self.get_logger().warn(f"Rerouting to bypass target: X={self.target_x:.2f}, Y={self.target_y:.2f}")
 
     def control_loop(self):
-        if not self.has_pose or not self.goal_active:
-            return
-
+        if not self.has_pose or not self.goal_active: return
         twist = Twist()
         
         # 1. Mutex Check
@@ -85,25 +97,22 @@ class WaypointNavNode(Node):
         else:
             self.wait_start_time = None
 
-        # 2. Fluid Kinematic Drive (Continuous motion saves time)
-        dx = self.target_x - self.current_x
-        dy = self.target_y - self.current_y
+        # 2. Fluid Kinematic Drive
+        dx, dy = self.target_x - self.current_x, self.target_y - self.current_y
         distance = math.hypot(dx, dy)
         
         if distance > 0.2:
             target_angle = math.atan2(dy, dx)
             angle_diff = (target_angle - self.current_yaw + math.pi) % (2 * math.pi) - math.pi
             
-            # Fluid turning: Don't stop completely to turn unless the angle is extreme
             if abs(angle_diff) > 0.8:
                 twist.angular.z = max(-1.0, min(1.0, 2.0 * angle_diff))
-                twist.linear.x = 0.05 # Keep slight forward momentum
+                twist.linear.x = 0.05
             else:
                 twist.linear.x = max(0.1, min(self.max_linear, 0.8 * distance))
                 twist.angular.z = max(-0.8, min(0.8, 1.5 * angle_diff))
         else:
             self.goal_active = False
-            self.get_logger().info("Target waypoint reached.")
 
         self.publisher_cmd.publish(twist)
 
