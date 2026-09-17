@@ -13,10 +13,12 @@ class WaypointNavNode(Node):
         self.declare_parameter('target_x', 4.0)
         self.declare_parameter('target_y', 2.0)
         self.declare_parameter('bypass_threshold_sec', 3.0)
+        self.declare_parameter('max_linear', 0.5)
         
         self.target_x = self.get_parameter('target_x').value
         self.target_y = self.get_parameter('target_y').value
         self.bypass_threshold = self.get_parameter('bypass_threshold_sec').value
+        self.max_linear = self.get_parameter('max_linear').value
         
         self.current_x = self.current_y = self.current_yaw = 0.0
         self.has_pose = False
@@ -32,7 +34,7 @@ class WaypointNavNode(Node):
         self.publisher_cmd = self.create_publisher(Twist, 'cmd_vel', 10)
 
         self.timer = self.create_timer(0.1, self.control_loop)
-        self.get_logger().info("Hybrid Waypoint Nav initialized: Dynamic Rerouting Enabled.")
+        self.get_logger().info("Time-Optimized Hybrid Waypoint Nav initialized.")
 
     def odom_callback(self, msg: Odometry):
         p = msg.pose.pose.position
@@ -52,20 +54,18 @@ class WaypointNavNode(Node):
         self.mutex_state = msg.data
 
     def trigger_dynamic_detour(self):
-        # Calculate a 1.5m lateral offset perpendicular to the current goal line
-        # This satisfies BEL's requirement for active avoidance over stop-and-wait
         dx = self.target_x - self.current_x
         dy = self.target_y - self.current_y
         dist = math.hypot(dx, dy)
         
         if dist > 0.1:
-            # Perpendicular vector
+            # Tighter 1.0m bypass to save time compared to previous 1.5m
             perp_x, perp_y = -dy / dist, dx / dist
-            self.target_x += perp_x * 1.5
-            self.target_y += perp_y * 1.5
+            self.target_x += perp_x * 1.0
+            self.target_y += perp_y * 1.0
             self.detour_active = True
             self.wait_start_time = None
-            self.get_logger().warn(f"Mutex timeout! Dynamically rerouting to bypass target: X={self.target_x:.2f}, Y={self.target_y:.2f}")
+            self.get_logger().warn(f"Rerouting to bypass target: X={self.target_x:.2f}, Y={self.target_y:.2f}")
 
     def control_loop(self):
         if not self.has_pose or not self.goal_active:
@@ -73,19 +73,19 @@ class WaypointNavNode(Node):
 
         twist = Twist()
         
-        # 1. Check Mutex Locks
+        # 1. Mutex Check
         if self.mutex_state == "WAIT" and not self.detour_active:
             if self.wait_start_time is None:
                 self.wait_start_time = time.time()
             elif time.time() - self.wait_start_time > self.bypass_threshold:
                 self.trigger_dynamic_detour()
             else:
-                self.publisher_cmd.publish(twist) # Stop and wait temporarily
+                self.publisher_cmd.publish(twist)
                 return
         else:
             self.wait_start_time = None
 
-        # 2. Drive to target
+        # 2. Fluid Kinematic Drive (Continuous motion saves time)
         dx = self.target_x - self.current_x
         dy = self.target_y - self.current_y
         distance = math.hypot(dx, dy)
@@ -94,11 +94,13 @@ class WaypointNavNode(Node):
             target_angle = math.atan2(dy, dx)
             angle_diff = (target_angle - self.current_yaw + math.pi) % (2 * math.pi) - math.pi
             
-            if abs(angle_diff) > 0.3:
-                twist.angular.z = max(-0.8, min(0.8, 1.5 * angle_diff))
+            # Fluid turning: Don't stop completely to turn unless the angle is extreme
+            if abs(angle_diff) > 0.8:
+                twist.angular.z = max(-1.0, min(1.0, 2.0 * angle_diff))
+                twist.linear.x = 0.05 # Keep slight forward momentum
             else:
-                twist.linear.x = max(0.0, min(0.3, 0.5 * distance))
-                twist.angular.z = max(-0.5, min(0.5, 1.0 * angle_diff))
+                twist.linear.x = max(0.1, min(self.max_linear, 0.8 * distance))
+                twist.angular.z = max(-0.8, min(0.8, 1.5 * angle_diff))
         else:
             self.goal_active = False
             self.get_logger().info("Target waypoint reached.")
