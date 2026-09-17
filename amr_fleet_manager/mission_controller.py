@@ -98,6 +98,14 @@ class MissionController(Node):
                 lambda msg, r=rid: self.health_status_callback(msg, r),
                 qos
             )
+        # Fleet-wide emergency replacement requests from health_monitor.
+        # Any robot's HealthMonitor can fire this -- mission_controller
+        # is the single place that actually reassigns the task, so two
+        # robots can't race to "helpfully" grab the same failing robot's job.
+        self.create_subscription(
+            String, '/fleet/emergency_replacement',
+            self.emergency_replacement_callback, qos
+        )
 
         # Fleet-wide, low-frequency broadcast of who is currently parked,
         # so edge nodes (spatial_mutex) can cheaply exclude them from
@@ -212,6 +220,46 @@ class MissionController(Node):
 
         payload = json.dumps({"charging_robots": charging_ids, "timestamp": now})
         self.charging_list_pub.publish(String(data=payload))
+
+    # ---------------- Emergency replacement ----------------
+
+    def emergency_replacement_callback(self, msg: String):
+        try:
+            data = json.loads(msg.data)
+        except json.JSONDecodeError:
+            return
+
+        failing_id = f"robot{data['failing_robot']}"
+        if failing_id not in self.workers:
+            return
+
+        worker = self.workers[failing_id]
+        self.get_logger().error(
+            f"[{failing_id}] EMERGENCY health critical (score={data.get('failing_score')}) "
+            f"-- pulling from active duty, requeuing task"
+        )
+
+        # Treat exactly like mark_offline: stop it, requeue its task.
+        # We do NOT force it fully offline (it may still be drivable to
+        # a service bay) -- but it stops receiving new task assignments.
+        worker.state = STATE_OFFLINE
+        self.cmd_pubs[failing_id].publish(Twist())
+
+        if worker.current_task is not None:
+            self.get_logger().warn(
+                f"[{failing_id}] re-queuing task {worker.current_task['task_id']} "
+                f"due to health emergency"
+            )
+            self.task_queue.insert(0, worker.current_task)
+            worker.current_task = None
+
+        suggested = data.get('suggested_replacement')
+        if suggested:
+            self.get_logger().info(
+                f"health_monitor suggests robot{suggested} as replacement "
+                f"(score={data.get('replacement_score')}) -- "
+                f"will be assigned via normal idle-task-assignment on its next cycle"
+            )
 
     def mark_offline(self, robot_id: str, reason: str = "heartbeat_timeout"):
         worker = self.workers[robot_id]
