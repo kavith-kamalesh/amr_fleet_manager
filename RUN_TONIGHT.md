@@ -27,3 +27,12 @@ BAG_PID=$!
 kill $BAG_PID
 cd ..
 python3 scripts/measure_collisions.py bags/coordinated_run --radius 0.35
+
+## Health scoring feature — verify after colcon build
+
+ros2 pkg executables amr_fleet_manager | grep -E "battery_monitor|health_monitor|alert_dispatcher"
+# should print all three
+
+# Launch file now includes battery_monitor + health_monitor per robot,
+# and alert_dispatcher once fleet-wide. No separate launch step needed
+# if using hybrid_fleet_bringup.launch.py as before.
