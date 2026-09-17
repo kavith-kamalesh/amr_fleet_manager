@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>BEL Edge Fleet | SIH26123</title>
+    <script src="https://cdn.jsdelivr.net/npm/roslib@1/build/roslib.min.js"></script>
+    <style>
+        body { background: #0a0a0a; color: #00ff00; font-family: monospace; padding: 20px; }
+        .panel { border: 1px solid #333; padding: 15px; margin-bottom: 20px; }
+        .alert { color: #ff3333; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>SIH26123: Edge-AI Distributed Fleet Coordination</h1>
+    <div class="panel">
+        <h3>Network Status</h3>
+        <p id="conn_status" class="alert">Connecting to ROS 2 Websocket (ws://localhost:9090)...</p>
+    </div>
+    <div class="panel">
+        <h3>Live Contract-Net Auction Feed</h3>
+        <div id="auction_log" style="height: 200px; overflow-y: scroll; border: 1px dashed #00ff00; padding: 10px;"></div>
+    </div>
+    <script>
+        var ros = new ROSLIB.Ros({ url : 'ws://localhost:9090' });
+        ros.on('connection', function() {
+            document.getElementById('conn_status').innerText = 'SECURE CONNECTION ESTABLISHED';
+            document.getElementById('conn_status').style.color = '#00ff00';
+        });
+        var auctionListener = new ROSLIB.Topic({
+            ros : ros,
+            name : '/fleet/task_auction',
+            messageType : 'std_msgs/String'
+        });
+        auctionListener.subscribe(function(message) {
+            var log = document.getElementById('auction_log');
+            log.innerHTML = "<p>[" + new Date().toLocaleTimeString() + "] " + message.data + "</p>" + log.innerHTML;
+        });
+    </script>
+</body>
+</html>
