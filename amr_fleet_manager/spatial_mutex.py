@@ -1,4 +1,6 @@
 import rclpy
+import onnxruntime as ort
+import numpy as np
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import String
@@ -12,6 +14,11 @@ PARKED_STATES = ("CHARGING", "SHIFT_CHANGE")
 class SpatialMutex(Node):
     def __init__(self):
         super().__init__('spatial_mutex')
+        self.ort_session = ort.InferenceSession(
+            "amr_fleet_manager/ai_policy/edge_policy_6534.onnx", 
+            providers=['CPUExecutionProvider']
+        )
+        self.get_logger().info("Slot C: Congestion Predictor ONNX Engine Active")
 
         self.declare_parameter('robot_id', 1)
         self.declare_parameter('priority', 0.5)
@@ -279,3 +286,11 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
+
+    def calculate_dynamic_cost(self, peer_positions, peer_velocities):
+        sensor_array = np.array([peer_positions + peer_velocities], dtype=np.float32)
+        congestion_score = self.ort_session.run(None, {"sensor_array": sensor_array})[0][0][0]
+        if congestion_score > 0.75:
+            self.get_logger().warn(f"High Congestion Predicted ({congestion_score:.2f}). Triggering bypass.")
+            return float('inf')
+        return 1.0
