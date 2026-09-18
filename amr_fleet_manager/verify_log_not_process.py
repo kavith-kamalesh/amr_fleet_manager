@@ -31,6 +31,7 @@ class VerifyLogNotProcess(Node):
             'nodes': [[0, 0], [0, 1]],
             'window': [time.time(), time.time() + 1.0],
             'priority': 0.9,
+            'seq': self.count,
         })
         self.intent_pub.publish(String(data=payload))
         self.get_logger().info(f"Sent fake peer intent #{self.count} "

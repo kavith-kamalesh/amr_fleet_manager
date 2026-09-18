@@ -63,6 +63,7 @@ class HealthMonitor(Node):
         self.peer_health = {}
         self._last_state = "OK"
         self._replacement_sent = False
+        self.health_seq = 0  # outgoing monotonic counter, see peer_health_cb
 
         self.create_timer(1.0, self.compute_and_broadcast)
         self.get_logger().info(f"HealthMonitor up | robot={self.robot_id}")
@@ -89,9 +90,15 @@ class HealthMonitor(Node):
             d = json.loads(msg.data)
             if d['robot_id'] == self.robot_id:
                 return
-            self.peer_health[d['robot_id']] = {'score': d['score'], 'last_seen': time.time()}
+            seq = d.get('seq', 0)
         except (json.JSONDecodeError, KeyError):
-            pass
+            return
+
+        prev = self.peer_health.get(d['robot_id'])
+        if prev is not None and seq <= prev.get('seq', -1):
+            return
+
+        self.peer_health[d['robot_id']] = {'score': d['score'], 'last_seen': time.time(), 'seq': seq}
 
     def _prune_reroutes(self, now):
         while self.reroute_events and now - self.reroute_events[0] > STALL_WINDOW_SEC:
@@ -139,7 +146,9 @@ class HealthMonitor(Node):
             'state': state,
             'breakdown': breakdown,
             'timestamp': time.time(),
+            'seq': self.health_seq,
         })))
+        self.health_seq += 1
 
         if state == "CRITICAL" and self._last_state != "CRITICAL":
             self._fire_emergency(score, breakdown)

@@ -6,8 +6,8 @@ from std_msgs.msg import String
 import math
 import time
 import json
-import hmac
-import hashlib
+
+from amr_fleet_manager.secure_mutex_wrapper import verify_mutex_signature
 
 class WaypointNavNode(Node):
     def __init__(self):
@@ -22,10 +22,7 @@ class WaypointNavNode(Node):
         self.target_y = self.get_parameter('target_y').value
         self.bypass_threshold = self.get_parameter('bypass_threshold_sec').value
         self.max_linear = self.get_parameter('max_linear').value
-        
-        # Defense-Grade Cryptographic Key
-        self.fleet_secret = b"BEL_DEFENCE_SIH26123_SECURE_KEY"
-        
+
         self.current_x = self.current_y = self.current_yaw = 0.0
         self.has_pose = False
         self.goal_active = True
@@ -60,11 +57,8 @@ class WaypointNavNode(Node):
             payload = json.loads(msg.data)
             state = payload.get("state", "")
             signature = payload.get("signature", "")
-            
-            # Verify cryptographic signature
-            expected_sig = hmac.new(self.fleet_secret, state.encode(), hashlib.sha256).hexdigest()
-            
-            if hmac.compare_digest(expected_sig, signature):
+
+            if verify_mutex_signature(state, signature):
                 self.mutex_state = state
             else:
                 self.get_logger().error("SECURITY BREACH: Invalid signature! Dropping spoofed mutex command.")

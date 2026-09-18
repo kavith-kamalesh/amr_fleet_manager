@@ -1,19 +1,18 @@
 import hmac
 import hashlib
 import json
+import os
 from std_msgs.msg import String
 
-FLEET_SECRET = b"BEL_DEFENCE_SIH26123_SECURE_KEY"
+FLEET_SECRET = os.environ.get("AMR_FLEET_SECRET", "DEV_ONLY_INSECURE_DEFAULT_KEY").encode()
+
 
 def sign_and_publish_mutex(publisher, state: str):
-    """
-    Wraps the standard ROS2 publisher to inject an HMAC-SHA256 signature.
-    Usage: replace publisher.publish(String(data=state)) 
-           with sign_and_publish_mutex(publisher, state)
-    """
     signature = hmac.new(FLEET_SECRET, state.encode(), hashlib.sha256).hexdigest()
-    payload = json.dumps({
-        "state": state,
-        "signature": signature
-    })
+    payload = json.dumps({"state": state, "signature": signature})
     publisher.publish(String(data=payload))
+
+
+def verify_mutex_signature(state: str, signature: str) -> bool:
+    expected = hmac.new(FLEET_SECRET, state.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature)

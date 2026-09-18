@@ -62,11 +62,33 @@ def generate_launch_description():
             executable='waypoint_nav_node',
             name='waypoint_nav_node',
             namespace=ns,
-            parameters=[{
-                'robot_id': cfg['id'],
-                'spawn_offset_x': cfg['x'],
-                'spawn_offset_y': cfg['y'],
-            }],
+            output='screen',
+        ))
+
+        ld.add_action(Node(
+            package='amr_fleet_manager',
+            executable='battery_monitor',
+            name='battery_monitor',
+            namespace=ns,
+            parameters=[{'robot_id': cfg['id']}],
+            output='screen',
+        ))
+
+        ld.add_action(Node(
+            package='amr_fleet_manager',
+            executable='health_monitor',
+            name='health_monitor',
+            namespace=ns,
+            parameters=[{'robot_id': cfg['id']}],
+            output='screen',
+        ))
+
+        ld.add_action(Node(
+            package='amr_fleet_manager',
+            executable='dynamic_obstacle_layer',
+            name='dynamic_obstacle_layer',
+            namespace=ns,
+            parameters=[{'robot_id': cfg['id']}],
             output='screen',
         ))
 
@@ -86,5 +108,12 @@ def generate_launch_description():
             namespace=ns,
             output='screen',
         ))
+
+    ld.add_action(Node(
+        package='amr_fleet_manager',
+        executable='alert_dispatcher',
+        name='alert_dispatcher',
+        output='screen',
+    ))
 
     return ld

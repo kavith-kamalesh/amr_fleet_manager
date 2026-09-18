@@ -1,11 +1,20 @@
+import os
 import rclpy
-import onnxruntime as ort
 import numpy as np
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import String
 import json
 import time
+
+from amr_fleet_manager.secure_mutex_wrapper import sign_and_publish_mutex
+
+try:
+    import onnxruntime as ort
+    _ONNX_AVAILABLE = True
+except ImportError:
+    ort = None
+    _ONNX_AVAILABLE = False
 
 
 PARKED_STATES = ("CHARGING", "SHIFT_CHANGE")
@@ -14,11 +23,24 @@ PARKED_STATES = ("CHARGING", "SHIFT_CHANGE")
 class SpatialMutex(Node):
     def __init__(self):
         super().__init__('spatial_mutex')
-        self.ort_session = ort.InferenceSession(
-            "amr_fleet_manager/ai_policy/edge_policy_6534.onnx", 
-            providers=['CPUExecutionProvider']
+
+        self.ort_session = None
+        model_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            'ai_policy', 'edge_policy_6534.onnx',
         )
-        self.get_logger().info("Slot C: Congestion Predictor ONNX Engine Active")
+        if _ONNX_AVAILABLE and os.path.exists(model_path):
+            try:
+                self.ort_session = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
+                self.get_logger().info("Slot C: Congestion Predictor ONNX Engine Active")
+            except Exception as e:
+                self.get_logger().warn(f"Slot C: failed to load ONNX policy ({e}); running without it")
+        else:
+            self.get_logger().warn(
+                "Slot C: edge_policy_6534.onnx not found or onnxruntime missing -- "
+                "run ai_policy/train_mlp.py and/or `pip install onnxruntime` to enable it. "
+                "Mutex logic runs unaffected."
+            )
 
         self.declare_parameter('robot_id', 1)
         self.declare_parameter('priority', 0.5)
@@ -73,7 +95,9 @@ class SpatialMutex(Node):
         self.wait_start_time = None
         self.reroute_requested = False
 
-        self.peer_intents = {}  # peer_id -> {'nodes','window','priority','last_seen'}
+        self.peer_intents = {}  # peer_id -> {'nodes','window','priority','last_seen','seq'}
+
+        self.intent_seq = 0
 
         self.timer = self.create_timer(0.1, self.mutex_loop)
         self.get_logger().info(f"SpatialMutex up for robot_id={self.robot_id}")
@@ -99,7 +123,7 @@ class SpatialMutex(Node):
         self.charge_start_time = time.time()
         self.current_edge_nodes = None
         self.wait_start_time = None
-        self.clearance_pub.publish(String(data="PARKED"))
+        sign_and_publish_mutex(self.clearance_pub, "PARKED")
         self.get_logger().info(
             f"Entering low-power state ({status}): suspending spatial_intent "
             f"broadcast and active conflict computation. Background listener stays on."
@@ -127,18 +151,23 @@ class SpatialMutex(Node):
     # ---------------- Background (low-power) listener ----------------
 
     def background_peer_listener(self, msg: String):
-        
+
         try:
             data = json.loads(msg.data)
             peer_id = data['id']
             if peer_id == self.robot_id:
                 return
             nodes = data['nodes']
+            seq = data.get('seq', 0)
         except (json.JSONDecodeError, KeyError, TypeError):
             return
 
+        prev = self.background_position_log.get(peer_id)
+        if prev is not None and seq <= prev.get('seq', -1):
+            return
+
         now = time.time()
-        self.background_position_log[peer_id] = {'nodes': nodes, 'last_seen': now}
+        self.background_position_log[peer_id] = {'nodes': nodes, 'last_seen': now, 'seq': seq}
         self.last_background_update_time = now
 
     def publish_costmap_seed(self):
@@ -182,7 +211,9 @@ class SpatialMutex(Node):
             'nodes': [list(n) for n in self.current_edge_nodes],
             'window': list(self.current_edge_window),
             'priority': self.priority,
+            'seq': self.intent_seq,
         })
+        self.intent_seq += 1
         self.broadcast_pub.publish(String(data=payload))
 
     # ---------------- Fleet-wide charging awareness ----------------
@@ -211,13 +242,22 @@ class SpatialMutex(Node):
             nodes = frozenset(tuple(n) for n in data['nodes'])
             window = tuple(data['window'])
             peer_priority = data.get('priority', 0.5)
+            seq = data.get('seq', 0)
         except (json.JSONDecodeError, KeyError, TypeError):
             self.get_logger().warn("Malformed spatial_intent packet, dropping")
             return
 
+        prev = self.peer_intents.get(peer_id)
+        if prev is not None and seq <= prev.get('seq', -1):
+            self.get_logger().warn(
+                f"Out-of-order/duplicate spatial_intent from peer {peer_id} "
+                f"(seq {seq} <= last accepted {prev.get('seq', -1)}), dropping"
+            )
+            return
+
         self.peer_intents[peer_id] = {
             'nodes': nodes, 'window': window,
-            'priority': peer_priority, 'last_seen': time.time(),
+            'priority': peer_priority, 'last_seen': time.time(), 'seq': seq,
         }
 
     def prune_stale_peers(self):
@@ -271,7 +311,7 @@ class SpatialMutex(Node):
         else:
             self.wait_start_time = None
 
-        self.clearance_pub.publish(String(data=clearance))
+        sign_and_publish_mutex(self.clearance_pub, clearance)
 
 
 def main(args=None):
