@@ -70,6 +70,7 @@ class SpatialMutex(Node):
         self.broadcast_pub = self.create_publisher(String, '/fleet/spatial_intent', qos_active)
         self.create_subscription(String, '/fleet/spatial_intent', self.peer_intent_callback, qos_active)
         self.clearance_pub = self.create_publisher(String, 'mutex_clearance', qos_active)
+        self.create_subscription(String, 'planned_intent', self.planned_intent_callback, qos_active)
 
         # --- Background (low-power) channel: always on, always cheap ---
         self.create_subscription(String, '/fleet/spatial_intent', self.background_peer_listener, qos_background)
@@ -233,6 +234,34 @@ class SpatialMutex(Node):
         self.wait_start_time = None
         self.reroute_requested = False
 
+    def planned_intent_callback(self, msg: String):
+        try:
+            data = json.loads(msg.data)
+            cells = frozenset(tuple(c) for c in data['cells'])
+            t0, t1 = float(data['window'][0]), float(data['window'][1])
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError, IndexError):
+            self.get_logger().warn("Malformed planned_intent, dropping", throttle_duration_sec=2.0)
+            return
+        if self.self_state in PARKED_STATES:
+            return
+        if not cells:
+            self.current_edge_nodes = None
+            self.current_edge_window = None
+            self.wait_start_time = None
+            self.reroute_requested = False
+            return
+        if cells != self.current_edge_nodes:
+            self.wait_start_time = None   # path changed (e.g. reroute) -> restart wait timer
+        self.current_edge_nodes = cells
+        self.current_edge_window = (t0 - self.reservation_buffer, t1 + self.reservation_buffer)
+
+    def _peer_outranks(self, pid, info):
+        # Strict total order: (priority, lower id wins). Equal priorities no longer deadlock.
+        try:
+            return (info['priority'], -int(pid)) > (self.priority, -int(self.robot_id))
+        except (TypeError, ValueError):
+            return info['priority'] >= self.priority
+
     def peer_intent_callback(self, msg: String):
         try:
             data = json.loads(msg.data)
@@ -297,7 +326,7 @@ class SpatialMutex(Node):
                 if not (self.current_edge_nodes & info['nodes']):
                     continue
                 if self.windows_conflict(self.current_edge_window, info['window']):
-                    if info['priority'] >= self.priority:
+                    if self._peer_outranks(pid, info):
                         blocked_by = pid
                         break
 
@@ -314,6 +343,15 @@ class SpatialMutex(Node):
         sign_and_publish_mutex(self.clearance_pub, clearance)
 
 
+    def calculate_dynamic_cost(self, peer_positions, peer_velocities):
+        sensor_array = np.array([peer_positions + peer_velocities], dtype=np.float32)
+        congestion_score = self.ort_session.run(None, {"sensor_array": sensor_array})[0][0][0]
+        if congestion_score > 0.75:
+            self.get_logger().warn(f"High Congestion Predicted ({congestion_score:.2f}). Triggering bypass.")
+            return float('inf')
+        return 1.0
+
+
 def main(args=None):
     rclpy.init(args=args)
     node = SpatialMutex()
@@ -326,11 +364,3 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
-
-    def calculate_dynamic_cost(self, peer_positions, peer_velocities):
-        sensor_array = np.array([peer_positions + peer_velocities], dtype=np.float32)
-        congestion_score = self.ort_session.run(None, {"sensor_array": sensor_array})[0][0][0]
-        if congestion_score > 0.75:
-            self.get_logger().warn(f"High Congestion Predicted ({congestion_score:.2f}). Triggering bypass.")
-            return float('inf')
-        return 1.0

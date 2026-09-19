@@ -82,7 +82,13 @@ class HealthMonitor(Node):
         self.lidar_quality = valid / len(msg.ranges)
 
     def clearance_cb(self, msg: String):
-        if msg.data == "REROUTE_REQUESTED":
+        # Clearance arrives as signed JSON {"state","ts","signature"}; the nav node
+        # is the verifier, this node only counts events (trusted local topic).
+        try:
+            state = json.loads(msg.data).get("state", "")
+        except (json.JSONDecodeError, AttributeError):
+            state = msg.data
+        if state == "REROUTE_REQUESTED":
             self.reroute_events.append(time.time())
 
     def peer_health_cb(self, msg: String):

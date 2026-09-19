@@ -22,6 +22,7 @@ setup(
     license='Apache-2.0',
     entry_points={
         'console_scripts': [
+            'sim_kinematic_robot = amr_fleet_manager.sim_kinematic_robot:main',
             'central_dispatcher = amr_fleet_manager.central_dispatcher:main',
             'mission_controller = amr_fleet_manager.mission_controller:main',
             'waypoint_nav_node = amr_fleet_manager.waypoint_nav_node:main',
