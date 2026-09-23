@@ -16,6 +16,11 @@ from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 import os
 
+# Pre-shared HMAC key for spatial_mutex intent signing. Every robot in
+# the fleet must be launched with the SAME key, or they'll reject each
+# other's signed intents as invalid. Roadmap: SROS2 / per-robot X.509.
+FLEET_SHARED_KEY = 'sih26123-team-codecircuit-demo-key'
+
 
 def generate_launch_description():
     ld = LaunchDescription()
@@ -97,7 +102,12 @@ def generate_launch_description():
             executable='spatial_mutex',
             name='spatial_mutex',
             namespace=ns,
-            parameters=[{'robot_id': cfg['id'], 'priority': cfg['priority']}],
+            parameters=[{
+                'robot_id': cfg['id'],
+                'priority': cfg['priority'],
+                'hmac_key': FLEET_SHARED_KEY,
+                'priority_aging_rate': 0.05,
+            }],
             output='screen',
         ))
 
