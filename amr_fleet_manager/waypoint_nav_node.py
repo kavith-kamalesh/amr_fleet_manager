@@ -1,225 +1,167 @@
 import json
-import math
 import time
+import math
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from geometry_msgs.msg import Twist, PoseStamped
 from nav_msgs.msg import Odometry
 from std_msgs.msg import String
 
-from amr_fleet_manager.secure_mutex_wrapper import verify_mutex_signature
-
-CELL_M = 1.0
-SAMPLE_STEP_M = 0.25
-
-
-def wrap_pi(a):
-    return math.atan2(math.sin(a), math.cos(a))
-
-
-def clamp(v, lo, hi):
-    return max(lo, min(hi, v))
+from amr_fleet_manager import nav_graph
+from amr_fleet_manager.robot_common import (
+    MUTEX_CLEAR, MUTEX_WAIT, MUTEX_REROUTE, MUTEX_PARKED,
+)
 
 
 class WaypointNavNode(Node):
     def __init__(self):
         super().__init__('waypoint_nav_node')
-        self.declare_parameter('robot_id', 1)
-        self.declare_parameter('target_x', 4.0)
-        self.declare_parameter('target_y', 2.0)
-        self.declare_parameter('bypass_threshold_sec', 3.0)
-        self.declare_parameter('max_linear', 0.2)
-        self.declare_parameter('max_angular', 1.0)
+
         self.declare_parameter('spawn_offset_x', 0.0)
         self.declare_parameter('spawn_offset_y', 0.0)
-        self.declare_parameter('goal_tolerance', 0.2)
-        self.declare_parameter('lookahead_m', 2.0)
-        self.declare_parameter('footprint_margin_m', 0.4)
-        self.declare_parameter('reroute_offset_m', 1.2)
-        self.declare_parameter('clearance_timeout_sec', 1.0)
-        self.declare_parameter('start_active', False)
+        self.declare_parameter('robot_speed', 1.0)
 
-        gp = lambda n: self.get_parameter(n).value
-        self.robot_id = int(gp('robot_id'))
-        self.max_linear = gp('max_linear')
-        self.max_angular = gp('max_angular')
-        self.off_x, self.off_y = gp('spawn_offset_x'), gp('spawn_offset_y')
-        self.tol = gp('goal_tolerance')
-        self.lookahead = gp('lookahead_m')
-        self.margin = gp('footprint_margin_m')
-        self.reroute_offset = gp('reroute_offset_m')
-        self.clearance_timeout = gp('clearance_timeout_sec')
+        self.offset_x = self.get_parameter('spawn_offset_x').value
+        self.offset_y = self.get_parameter('spawn_offset_y').value
+        self.speed = self.get_parameter('robot_speed').value
 
-        self.goal = (gp('target_x'), gp('target_y')) if gp('start_active') else None
-        self.via = None
-        self.rerouted = False
-        self.x = self.y = self.yaw = 0.0
-        self.has_pose = False
-        self.clearance = "WAIT"
-        self.last_clearance_t = None
-        self._status = None
-        self._idle_announced = False
+        self.current_x = 0.0
+        self.current_y = 0.0
+        self.current_yaw = 0.0
 
-        qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE,
-                         history=HistoryPolicy.KEEP_LAST, depth=10)
-        self.create_subscription(Odometry, 'odom', self.odom_callback, qos)
-        self.create_subscription(PoseStamped, 'goal_pose', self.goal_callback, qos)
-        self.create_subscription(String, 'mutex_clearance', self.mutex_callback, qos)
-        self.publisher_cmd = self.create_publisher(Twist, 'cmd_vel_nav', qos)
-        self.intent_pub = self.create_publisher(String, 'planned_intent', qos)
-        self.status_pub = self.create_publisher(String, 'nav_status', qos)
+        self.path = None
+        self.path_idx = 0
+        self.blocked_edges = set()
+        self.mutex_state = MUTEX_CLEAR
+        self.edge_announced = False
 
-        self.create_timer(0.1, self.control_loop)
-        self.get_logger().info("Zero-Trust Nav up: verified+fresh clearance required, intent published.")
+        self.create_subscription(Odometry, 'odom', self.odom_cb, 10)
+        self.create_subscription(PoseStamped, 'goal_pose', self.goal_cb, 10)
+        self.create_subscription(String, 'mutex_clearance', self.mutex_cb, 10)
 
-    def _target(self):
-        return self.via if self.via is not None else self.goal
+        self.cmd_vel_pub = self.create_publisher(Twist, 'cmd_vel', 10)
+        self.planned_edge_pub = self.create_publisher(String, 'planned_edge', 10)
+        self.timer = self.create_timer(0.1, self.control_loop)
 
-    def _cmd(self, v, w):
-        t = Twist()
-        t.linear.x, t.angular.z = float(v), float(w)
-        self.publisher_cmd.publish(t)
+        self.get_logger().info(
+            "waypoint_nav_node up: A* over the shared grid, motion gated on spatial_mutex clearance."
+        )
 
-    def _set_status(self, s):
-        if s != self._status:
-            self._status = s
-            self.status_pub.publish(String(data=s))
+    def odom_cb(self, msg: Odometry):
+        self.current_x = msg.pose.pose.position.x + self.offset_x
+        self.current_y = msg.pose.pose.position.y + self.offset_y
 
-    def odom_callback(self, msg: Odometry):
-        p, o = msg.pose.pose.position, msg.pose.pose.orientation
-        self.yaw = math.atan2(2.0 * (o.w * o.z + o.x * o.y), 1.0 - 2.0 * (o.y * o.y + o.z * o.z))
-        self.x, self.y = p.x + self.off_x, p.y + self.off_y
-        self.has_pose = True
+        q = msg.pose.pose.orientation
+        siny_cosp = 2 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
+        self.current_yaw = math.atan2(siny_cosp, cosy_cosp)
 
-    def goal_callback(self, msg: PoseStamped):
-        self.goal = (msg.pose.position.x, msg.pose.position.y)
-        self.via = None
-        self.rerouted = False
-        self.get_logger().info(f"New goal {self.goal}")
+    def goal_cb(self, msg: PoseStamped):
+        start_node = nav_graph.node_of(self.current_x, self.current_y)
+        goal_node = nav_graph.node_of(msg.pose.position.x, msg.pose.position.y)
 
-    def mutex_callback(self, msg: String):
-        try:
-            payload = json.loads(msg.data)
-            state = payload.get("state", "")
-            ok = verify_mutex_signature(state, payload.get("signature", ""), payload.get("ts"))
-        except (json.JSONDecodeError, AttributeError):
-            self.get_logger().warn("SECURITY: dropping unsigned/plaintext mutex command.",
-                                   throttle_duration_sec=2.0)
+        self.blocked_edges.clear()
+        self.path = nav_graph.astar(start_node, goal_node, frozenset(self.blocked_edges))
+        self.path_idx = 0
+        self.edge_announced = False
+
+        if self.path is None:
+            self.get_logger().error(f"No A* path from {start_node} to {goal_node}")
+        else:
+            self.get_logger().info(f"New FMS goal ({msg.pose.position.x}, {msg.pose.position.y}) -> path {self.path}")
+
+    def mutex_cb(self, msg: String):
+        self.mutex_state = msg.data
+
+    def current_edge(self):
+        if self.path is None or self.path_idx >= len(self.path) - 1:
+            return None
+        return (self.path[self.path_idx], self.path[self.path_idx + 1])
+
+    def announce_current_edge(self):
+        edge = self.current_edge()
+        if edge is None or self.edge_announced:
             return
-        if not ok:
-            self.get_logger().error("SECURITY: invalid or stale signature, dropping mutex command.",
-                                    throttle_duration_sec=2.0)
-            return
-        self.clearance = state
-        self.last_clearance_t = time.monotonic()
-        if state == "REROUTE_REQUESTED" and not self.rerouted and self.goal and self.has_pose:
-            self._start_detour()
-
-    def _start_detour(self):
-        gx, gy = self.goal
-        dx, dy = gx - self.x, gy - self.y
-        d = math.hypot(dx, dy)
-        if d < 0.3:
-            return
-        ux, uy = dx / d, dy / d
-        side = 1.0 if self.robot_id % 2 == 0 else -1.0
-        self.via = (self.x + ux * d * 0.5 - uy * side * self.reroute_offset,
-                    self.y + uy * d * 0.5 + ux * side * self.reroute_offset)
-        self.rerouted = True
-        self.get_logger().warn(f"Detour via ({self.via[0]:.2f},{self.via[1]:.2f}); goal {self.goal} unchanged")
-
-    def _plan_cells(self):
-        pts = [(self.x, self.y)]
-        px, py = self.x, self.y
-        remaining = self.lookahead
-        legs = [self._target()] + ([self.goal] if self.via is not None else [])
-        for wx, wy in legs:
-            seg = math.hypot(wx - px, wy - py)
-            if seg < 1e-6:
-                continue
-            take = min(seg, remaining)
-            n = max(1, int(take / SAMPLE_STEP_M))
-            for k in range(1, n + 1):
-                f = (take * k / n) / seg
-                pts.append((px + (wx - px) * f, py + (wy - py) * f))
-            remaining -= take
-            if remaining <= 1e-6:
-                break
-            px, py = wx, wy
-        cells = set()
-        for x, y in pts:
-            for dx in (-self.margin, self.margin):
-                for dy in (-self.margin, self.margin):
-                    cells.add((math.floor((x + dx) / CELL_M), math.floor((y + dy) / CELL_M)))
-        return sorted(cells), self.lookahead - remaining
-
-    def _publish_intent(self):
-        now = time.time()
-        cells, length = self._plan_cells()
-        t1 = now + length / max(self.max_linear, 0.05) + 1.0
-        self.intent_pub.publish(String(data=json.dumps({'cells': cells, 'window': [now, t1]})))
-        self._idle_announced = False
-
-    def _announce_idle(self):
-        if not self._idle_announced:
-            now = time.time()
-            self.intent_pub.publish(String(data=json.dumps({'cells': [], 'window': [now, now]})))
-            self._idle_announced = True
+        n1, n2 = edge
+        t_start = time.time()
+        t_end = t_start + nav_graph.CELL / self.speed
+        payload = json.dumps({
+            'nodes': [list(n1), list(n2)],
+            't_start': t_start,
+            't_end': t_end,
+        })
+        self.planned_edge_pub.publish(String(data=payload))
+        self.edge_announced = True
 
     def control_loop(self):
-        if not self.has_pose or self.goal is None:
-            self._cmd(0.0, 0.0)
-            self._announce_idle()
-            if self._status != "ARRIVED":
-                self._set_status("IDLE")
+        twist = Twist()
+
+        if self.mutex_state == MUTEX_PARKED:
+            self.cmd_vel_pub.publish(twist)
             return
 
-        tx, ty = self._target()
-        dist = math.hypot(tx - self.x, ty - self.y)
-        if dist < self.tol:
-            if self.via is not None:
-                self.via = None
-                return
-            self.get_logger().info("Goal reached")
-            self.goal = None
-            self._cmd(0.0, 0.0)
-            self._announce_idle()
-            self._set_status("ARRIVED")
+        if self.path is None:
+            self.cmd_vel_pub.publish(twist)
             return
 
-        self._publish_intent()
-
-        stale = (self.last_clearance_t is None or
-                 time.monotonic() - self.last_clearance_t > self.clearance_timeout)
-        if stale:
-            self._cmd(0.0, 0.0)
-            self._set_status("WAITING")
-            self.get_logger().warn("No fresh verified clearance; holding.", throttle_duration_sec=2.0)
-            return
-        if self.clearance != "CLEAR":
-            self._cmd(0.0, 0.0)
-            self._set_status("WAITING")
+        edge = self.current_edge()
+        if edge is None:
+            self.cmd_vel_pub.publish(twist)
+            self.get_logger().info("Goal reached.")
+            self.path = None
             return
 
-        err = wrap_pi(math.atan2(ty - self.y, tx - self.x) - self.yaw)
-        if abs(err) > 0.8:
-            self._cmd(0.02, clamp(2.0 * err, -self.max_angular, self.max_angular))
-        else:
-            self._cmd(clamp(0.8 * dist, 0.05, self.max_linear),
-                      clamp(1.5 * err, -self.max_angular, self.max_angular))
-        self._set_status("REROUTING" if self.via is not None else "MOVING")
+        self.announce_current_edge()
+
+        if self.mutex_state == MUTEX_REROUTE:
+            current_node = self.path[self.path_idx]
+            goal_node = self.path[-1]
+            self.blocked_edges.add(edge)
+            new_path = nav_graph.astar(current_node, goal_node, frozenset(self.blocked_edges))
+            if new_path:
+                self.get_logger().warn(f"Rerouting around blocked edge {edge} -> {new_path}")
+                self.path = new_path
+                self.path_idx = 0
+                self.edge_announced = False
+            else:
+                self.get_logger().warn(f"No alternate route around {edge}; continuing to wait.")
+            self.cmd_vel_pub.publish(twist)
+            return
+
+        if self.mutex_state == MUTEX_WAIT:
+            self.cmd_vel_pub.publish(twist)
+            return
+
+        n2 = edge[1]
+        target = nav_graph.node_pos(n2)
+        dx = target[0] - self.current_x
+        dy = target[1] - self.current_y
+        distance = math.hypot(dx, dy)
+
+        if distance < 0.2:
+            self.path_idx += 1
+            self.edge_announced = False
+            self.cmd_vel_pub.publish(twist)
+            return
+
+        target_yaw = math.atan2(dy, dx)
+        yaw_error = target_yaw - self.current_yaw
+        while yaw_error > math.pi:
+            yaw_error -= 2 * math.pi
+        while yaw_error < -math.pi:
+            yaw_error += 2 * math.pi
+
+        twist.angular.z = max(min(yaw_error * 1.5, 1.0), -1.0)
+        twist.linear.x = self.speed if abs(yaw_error) < 0.5 else 0.0
+
+        self.cmd_vel_pub.publish(twist)
 
 
 def main(args=None):
     rclpy.init(args=args)
-    node = WaypointNavNode()
-    try:
-        rclpy.spin(node)
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
+    rclpy.spin(WaypointNavNode())
+    rclpy.shutdown()
 
 
 if __name__ == '__main__':

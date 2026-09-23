@@ -1,41 +1,83 @@
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
-import threading
-from llama_cpp import Llama
+
+from amr_fleet_manager.robot_common import (
+    MUTEX_CLEAR, MUTEX_WAIT, MUTEX_REROUTE, MUTEX_PARKED,
+)
+
 
 class EdgeSLMNode(Node):
     def __init__(self):
         super().__init__('edge_slm_node')
-        self.get_logger().info("Loading Qwen2.5-0.5B (Thread Pinned)...")
-        self.llm = Llama(model_path="models/qwen2.5-0.5b-instruct-q4_k_m.gguf", n_threads=2)
-        
-        self.subscription = self.create_subscription(String, '/robot1/state', self.state_cb, 10)
-        self.explanation_pub = self.create_publisher(String, '/robot1/state_explanation', 10)
-        self.busy = False 
 
-    def state_cb(self, msg):
-        if self.busy:
-            return  # Drop request if inference is already running
-        
-        self.busy = True
-        threading.Thread(target=self.generate_explanation, args=(msg.data,), daemon=True).start()
+        self.declare_parameter('robot_id', 1)
+        self.declare_parameter('model_path', '')
 
-    def generate_explanation(self, state_text):
-        prompt = f"The robot state is {state_text}. Explain this in one short sentence."
-        response = self.llm(prompt, max_tokens=30, echo=False)
-        
-        out_msg = String()
-        out_msg.data = response['choices'][0]['text'].strip()
-        self.explanation_pub.publish(out_msg)
-        self.busy = False
+        self.robot_id = self.get_parameter('robot_id').value
+        self.model_path = self.get_parameter('model_path').value
+
+        self.llm = None
+        self.setup_ai()
+
+        self.create_subscription(String, 'mutex_clearance', self.state_cb, 10)
+        self.explanation_pub = self.create_publisher(String, 'status_explanation', 10)
+
+        self.last_state = ""
+        self.get_logger().info(f"Edge AI (SLM) initialized for Robot {self.robot_id}")
+
+    def setup_ai(self):
+        if self.model_path:
+            try:
+                from llama_cpp import Llama
+                self.llm = Llama(model_path=self.model_path, n_ctx=256, verbose=False)
+                self.get_logger().info("Hardware SLM loaded successfully.")
+            except ImportError:
+                self.get_logger().warn("llama-cpp-python not found. Using template fallback.")
+            except Exception as e:
+                self.get_logger().warn(f"Model load failed: {e}. Using template fallback.")
+        else:
+            self.get_logger().info("No model path provided. Running in Explainable AI fallback mode.")
+
+    def state_cb(self, msg: String):
+        current_state = msg.data
+        if current_state != self.last_state:
+            explanation = self.generate_explanation(current_state)
+
+            out_msg = String()
+            out_msg.data = explanation
+            self.explanation_pub.publish(out_msg)
+
+            self.get_logger().info(f"[XAI] {explanation}")
+            self.last_state = current_state
+
+    def generate_explanation(self, state):
+        prompt = f"You are an industrial robot. Your current intersection state is: {state}. Explain what you are doing in one short sentence."
+
+        if self.llm:
+            try:
+                output = self.llm(prompt, max_tokens=30, stop=["\n", "Robot:"])
+                return output['choices'][0]['text'].strip()
+            except Exception as e:
+                self.get_logger().error(f"Inference error: {e}")
+
+        if state == MUTEX_WAIT:
+            return "I am halting at the intersection because another unit has right-of-way."
+        elif state == MUTEX_CLEAR:
+            return "The path is clear. I am proceeding along my designated route."
+        elif state == MUTEX_REROUTE:
+            return "I have waited too long for the intersection; computing an alternate route."
+        elif state == MUTEX_PARKED:
+            return "I am parked (charging or shift change) and out of active traffic negotiation."
+
+        return f"Transitioning to state: {state}"
+
 
 def main(args=None):
     rclpy.init(args=args)
-    node = EdgeSLMNode()
-    rclpy.spin(node)
-    node.destroy_node()
+    rclpy.spin(EdgeSLMNode())
     rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()

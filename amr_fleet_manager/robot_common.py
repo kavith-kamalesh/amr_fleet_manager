@@ -115,3 +115,8 @@ class Task:
             "assigned_robot": self.assigned_robot,
             "status": self.status,
         }
+
+MUTEX_CLEAR = "CLEAR"
+MUTEX_WAIT = "WAIT"
+MUTEX_REROUTE = "REROUTE_REQUESTED"
+MUTEX_PARKED = "PARKED"

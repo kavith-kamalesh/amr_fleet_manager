@@ -1,21 +1,13 @@
-import os
 import rclpy
-import numpy as np
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import String
 import json
 import time
 
-from amr_fleet_manager.secure_mutex_wrapper import sign_and_publish_mutex
-
-try:
-    import onnxruntime as ort
-    _ONNX_AVAILABLE = True
-except ImportError:
-    ort = None
-    _ONNX_AVAILABLE = False
-
+from amr_fleet_manager.robot_common import (
+    MUTEX_CLEAR, MUTEX_WAIT, MUTEX_REROUTE, MUTEX_PARKED,
+)
 
 PARKED_STATES = ("CHARGING", "SHIFT_CHANGE")
 
@@ -23,24 +15,6 @@ PARKED_STATES = ("CHARGING", "SHIFT_CHANGE")
 class SpatialMutex(Node):
     def __init__(self):
         super().__init__('spatial_mutex')
-
-        self.ort_session = None
-        model_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            'ai_policy', 'edge_policy_6534.onnx',
-        )
-        if _ONNX_AVAILABLE and os.path.exists(model_path):
-            try:
-                self.ort_session = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
-                self.get_logger().info("Slot C: Congestion Predictor ONNX Engine Active")
-            except Exception as e:
-                self.get_logger().warn(f"Slot C: failed to load ONNX policy ({e}); running without it")
-        else:
-            self.get_logger().warn(
-                "Slot C: edge_policy_6534.onnx not found or onnxruntime missing -- "
-                "run ai_policy/train_mlp.py and/or `pip install onnxruntime` to enable it. "
-                "Mutex logic runs unaffected."
-            )
 
         self.declare_parameter('robot_id', 1)
         self.declare_parameter('priority', 0.5)
@@ -57,36 +31,26 @@ class SpatialMutex(Node):
         qos_active = QoSProfile(reliability=ReliabilityPolicy.RELIABLE,
                                  history=HistoryPolicy.KEEP_LAST, depth=10)
 
-        # Deliberately lightweight QoS for the background/low-power
-        # listener: best-effort, only the single latest message kept.
-        # This is a SEPARATE subscription object from the active one --
-        # ROS2 QoS cannot be changed on an existing subscription, so a
-        # second subscription is the correct way to run both regimes
-        # on the same topic simultaneously.
         qos_background = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
                                      history=HistoryPolicy.KEEP_LAST, depth=1)
 
-        # --- Active (full-power) channel ---
         self.broadcast_pub = self.create_publisher(String, '/fleet/spatial_intent', qos_active)
         self.create_subscription(String, '/fleet/spatial_intent', self.peer_intent_callback, qos_active)
         self.clearance_pub = self.create_publisher(String, 'mutex_clearance', qos_active)
-        self.create_subscription(String, 'planned_intent', self.planned_intent_callback, qos_active)
 
-        # --- Background (low-power) channel: always on, always cheap ---
+        self.create_subscription(String, 'planned_edge', self.planned_edge_callback, qos_active)
+
         self.create_subscription(String, '/fleet/spatial_intent', self.background_peer_listener, qos_background)
-        self.background_position_log = {}  # peer_id -> {'nodes': [...], 'last_seen': t}
+        self.background_position_log = {}
         self.last_background_update_time = None
 
-        # --- Fleet-wide awareness of who is currently parked ---
         self.create_subscription(String, '/fleet/charging_robots', self.charging_list_callback, qos_active)
         self.known_charging_robots = set()
 
-        # --- Self state: this robot's own reported status ---
         self.create_subscription(String, 'health_status', self.self_health_callback, qos_active)
         self.self_state = "IDLE"
         self.charge_start_time = None
 
-        # --- Costmap seeding + state-sync request/response channels ---
         self.costmap_seed_pub = self.create_publisher(String, 'costmap_seed', qos_active)
         self.sync_request_pub = self.create_publisher(String, '/fleet/state_sync_request', qos_active)
         self.create_subscription(String, '/fleet/state_sync_request', self.state_sync_request_callback, qos_active)
@@ -96,14 +60,25 @@ class SpatialMutex(Node):
         self.wait_start_time = None
         self.reroute_requested = False
 
-        self.peer_intents = {}  # peer_id -> {'nodes','window','priority','last_seen','seq'}
-
-        self.intent_seq = 0
+        self.peer_intents = {}
 
         self.timer = self.create_timer(0.1, self.mutex_loop)
         self.get_logger().info(f"SpatialMutex up for robot_id={self.robot_id}")
 
-    # ---------------- Self state transitions ----------------
+    def planned_edge_callback(self, msg: String):
+        try:
+            data = json.loads(msg.data)
+            n1, n2 = data['nodes']
+            t_start = data['t_start']
+            t_end = data['t_end']
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+            self.get_logger().warn("Malformed planned_edge packet, dropping")
+            return
+
+        if self.self_state in PARKED_STATES:
+            return
+
+        self.set_intent(tuple(n1), tuple(n2), t_start, t_end)
 
     def self_health_callback(self, msg: String):
         try:
@@ -124,7 +99,7 @@ class SpatialMutex(Node):
         self.charge_start_time = time.time()
         self.current_edge_nodes = None
         self.wait_start_time = None
-        sign_and_publish_mutex(self.clearance_pub, "PARKED")
+        self.clearance_pub.publish(String(data=MUTEX_PARKED))
         self.get_logger().info(
             f"Entering low-power state ({status}): suspending spatial_intent "
             f"broadcast and active conflict computation. Background listener stays on."
@@ -135,9 +110,6 @@ class SpatialMutex(Node):
 
         self.publish_costmap_seed()
 
-        # Fail-safe: if the background listener received nothing at all
-        # since the charge window started, assume Wi-Fi was down and
-        # request a full fleet resync before trusting any local data.
         if (self.last_background_update_time is None or
                 self.charge_start_time is None or
                 self.last_background_update_time < self.charge_start_time):
@@ -149,30 +121,21 @@ class SpatialMutex(Node):
 
         self.charge_start_time = None
 
-    # ---------------- Background (low-power) listener ----------------
-
     def background_peer_listener(self, msg: String):
-
         try:
             data = json.loads(msg.data)
             peer_id = data['id']
             if peer_id == self.robot_id:
                 return
             nodes = data['nodes']
-            seq = data.get('seq', 0)
         except (json.JSONDecodeError, KeyError, TypeError):
             return
 
-        prev = self.background_position_log.get(peer_id)
-        if prev is not None and seq <= prev.get('seq', -1):
-            return
-
         now = time.time()
-        self.background_position_log[peer_id] = {'nodes': nodes, 'last_seen': now, 'seq': seq}
+        self.background_position_log[peer_id] = {'nodes': nodes, 'last_seen': now}
         self.last_background_update_time = now
 
     def publish_costmap_seed(self):
-        
         payload = json.dumps({
             'robot_id': self.robot_id,
             'seed_source': 'background_low_power_log',
@@ -190,7 +153,6 @@ class SpatialMutex(Node):
         self.sync_request_pub.publish(String(data=payload))
 
     def state_sync_request_callback(self, msg: String):
-        
         try:
             data = json.loads(msg.data)
             requester = data.get('requesting_robot')
@@ -212,12 +174,8 @@ class SpatialMutex(Node):
             'nodes': [list(n) for n in self.current_edge_nodes],
             'window': list(self.current_edge_window),
             'priority': self.priority,
-            'seq': self.intent_seq,
         })
-        self.intent_seq += 1
         self.broadcast_pub.publish(String(data=payload))
-
-    # ---------------- Fleet-wide charging awareness ----------------
 
     def charging_list_callback(self, msg: String):
         try:
@@ -226,41 +184,11 @@ class SpatialMutex(Node):
         except json.JSONDecodeError:
             pass
 
-    # ---------------- Normal (active) mutex logic ----------------
-
     def set_intent(self, node_a, node_b, t_start, t_end):
         self.current_edge_nodes = frozenset([tuple(node_a), tuple(node_b)])
         self.current_edge_window = (t_start - self.reservation_buffer, t_end + self.reservation_buffer)
         self.wait_start_time = None
         self.reroute_requested = False
-
-    def planned_intent_callback(self, msg: String):
-        try:
-            data = json.loads(msg.data)
-            cells = frozenset(tuple(c) for c in data['cells'])
-            t0, t1 = float(data['window'][0]), float(data['window'][1])
-        except (json.JSONDecodeError, KeyError, TypeError, ValueError, IndexError):
-            self.get_logger().warn("Malformed planned_intent, dropping", throttle_duration_sec=2.0)
-            return
-        if self.self_state in PARKED_STATES:
-            return
-        if not cells:
-            self.current_edge_nodes = None
-            self.current_edge_window = None
-            self.wait_start_time = None
-            self.reroute_requested = False
-            return
-        if cells != self.current_edge_nodes:
-            self.wait_start_time = None   # path changed (e.g. reroute) -> restart wait timer
-        self.current_edge_nodes = cells
-        self.current_edge_window = (t0 - self.reservation_buffer, t1 + self.reservation_buffer)
-
-    def _peer_outranks(self, pid, info):
-        # Strict total order: (priority, lower id wins). Equal priorities no longer deadlock.
-        try:
-            return (info['priority'], -int(pid)) > (self.priority, -int(self.robot_id))
-        except (TypeError, ValueError):
-            return info['priority'] >= self.priority
 
     def peer_intent_callback(self, msg: String):
         try:
@@ -271,31 +199,18 @@ class SpatialMutex(Node):
             nodes = frozenset(tuple(n) for n in data['nodes'])
             window = tuple(data['window'])
             peer_priority = data.get('priority', 0.5)
-            seq = data.get('seq', 0)
         except (json.JSONDecodeError, KeyError, TypeError):
             self.get_logger().warn("Malformed spatial_intent packet, dropping")
             return
 
-        prev = self.peer_intents.get(peer_id)
-        if prev is not None and seq <= prev.get('seq', -1):
-            self.get_logger().warn(
-                f"Out-of-order/duplicate spatial_intent from peer {peer_id} "
-                f"(seq {seq} <= last accepted {prev.get('seq', -1)}), dropping"
-            )
-            return
-
         self.peer_intents[peer_id] = {
             'nodes': nodes, 'window': window,
-            'priority': peer_priority, 'last_seen': time.time(), 'seq': seq,
+            'priority': peer_priority, 'last_seen': time.time(),
         }
 
     def prune_stale_peers(self):
         now = time.time()
         for pid in list(self.peer_intents.keys()):
-            # Standard staleness prune, PLUS: a peer known to be
-            # charging is treated as expired immediately -- its last
-            # reservation is frozen and must never block an active
-            # robot indefinitely.
             if pid in self.known_charging_robots:
                 del self.peer_intents[pid]
                 continue
@@ -306,11 +221,15 @@ class SpatialMutex(Node):
     def windows_conflict(w1, w2):
         return not (w1[1] < w2[0] or w2[1] < w1[0])
 
+    def peer_has_priority(self, pid, peer_priority):
+        if peer_priority > self.priority:
+            return True
+        if peer_priority < self.priority:
+            return False
+        return pid < self.robot_id
+
     def mutex_loop(self):
         if self.self_state in PARKED_STATES:
-            # Fully suspended: no broadcast, no conflict computation.
-            # The background_peer_listener above is a SEPARATE
-            # subscription and keeps running regardless of this guard.
             return
 
         self.prune_stale_peers()
@@ -318,7 +237,7 @@ class SpatialMutex(Node):
         if self.current_edge_nodes is not None:
             self.publish_current_intent_now()
 
-        clearance = "CLEAR"
+        clearance = MUTEX_CLEAR
         blocked_by = None
 
         if self.current_edge_nodes is not None:
@@ -326,30 +245,21 @@ class SpatialMutex(Node):
                 if not (self.current_edge_nodes & info['nodes']):
                     continue
                 if self.windows_conflict(self.current_edge_window, info['window']):
-                    if self._peer_outranks(pid, info):
+                    if self.peer_has_priority(pid, info['priority']):
                         blocked_by = pid
                         break
 
         if blocked_by is not None:
-            clearance = "WAIT"
+            clearance = MUTEX_WAIT
             if self.wait_start_time is None:
                 self.wait_start_time = time.time()
             elif time.time() - self.wait_start_time > self.reroute_wait_threshold:
-                clearance = "REROUTE_REQUESTED"
+                clearance = MUTEX_REROUTE
                 self.reroute_requested = True
         else:
             self.wait_start_time = None
 
-        sign_and_publish_mutex(self.clearance_pub, clearance)
-
-
-    def calculate_dynamic_cost(self, peer_positions, peer_velocities):
-        sensor_array = np.array([peer_positions + peer_velocities], dtype=np.float32)
-        congestion_score = self.ort_session.run(None, {"sensor_array": sensor_array})[0][0][0]
-        if congestion_score > 0.75:
-            self.get_logger().warn(f"High Congestion Predicted ({congestion_score:.2f}). Triggering bypass.")
-            return float('inf')
-        return 1.0
+        self.clearance_pub.publish(String(data=clearance))
 
 
 def main(args=None):
