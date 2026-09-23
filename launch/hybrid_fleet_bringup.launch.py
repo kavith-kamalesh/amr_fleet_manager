@@ -1,8 +1,14 @@
 """
 Hybrid Edge-Cloud launch file.
 Launches:
-  - central_dispatcher.py in the root namespace (/central_fms logic,
-    but the node itself runs unnamespaced since it's the global authority)
+  - mission_controller.py in the root namespace: central task allocation
+    and fleet-health watchdog ONLY. It assigns goal_pose to idle robots
+    and re-queues work on failure/charge-pause -- it does NOT compute
+    cmd_vel for any robot, so this is a legitimate WMS-style central
+    authority, not a violation of the "no central server" traffic
+    coordination requirement. (central_dispatcher.py is superseded by
+    this node and is no longer launched -- it remains in the repo only
+    as the original scripted-demo reference.)
   - 3 fully isolated robot namespaces (/robot1, /robot2, /robot3), each
     with its own waypoint_nav_node, spatial_mutex, and safety_fallback
   - spawns each TurtleBot into Gazebo sequentially with a unique
@@ -25,11 +31,13 @@ FLEET_SHARED_KEY = 'sih26123-team-codecircuit-demo-key'
 def generate_launch_description():
     ld = LaunchDescription()
 
-    # Central FMS (root namespace, no robot-specific prefix)
+    # Central FMS (root namespace, no robot-specific prefix).
+    # Task allocation + watchdog only -- no motion control. See module
+    # docstring above for why this is architecturally fine.
     ld.add_action(Node(
         package='amr_fleet_manager',
-        executable='central_dispatcher',
-        name='central_dispatcher',
+        executable='mission_controller',
+        name='mission_controller',
         output='screen',
     ))
 

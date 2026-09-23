@@ -42,6 +42,7 @@ class WaypointNavNode(Node):
 
         self.cmd_vel_pub = self.create_publisher(Twist, 'cmd_vel', 10)
         self.planned_edge_pub = self.create_publisher(String, 'planned_edge', 10)
+        self.task_complete_pub = self.create_publisher(String, 'task_complete', 10)
         self.timer = self.create_timer(0.1, self.control_loop)
 
         self.get_logger().info(
@@ -109,6 +110,7 @@ class WaypointNavNode(Node):
         if edge is None:
             self.cmd_vel_pub.publish(twist)
             self.get_logger().info("Goal reached.")
+            self.task_complete_pub.publish(String(data="DONE"))
             self.path = None
             return
 
