@@ -1,101 +1,91 @@
 import math
-import time
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, qos_profile_sensor_data
-from geometry_msgs.msg import Twist
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String
 
+# Matches the MIN_SAFE_DIST margin used in benchmark_stop_and_wait_vs_hybrid.py's
+# geometric safety layer -- that benchmark demonstrated this class of check is
+# structurally necessary: the topological mutex only governs who may ENTER a
+# contested edge, it says nothing about whether the space directly ahead is
+# physically clear right now.
+SAFE_STOP_DISTANCE = 0.45   # meters
+CLEAR_HYSTERESIS_DISTANCE = 0.55  # must clear past this before releasing, to avoid STOP/CLEAR flapping right at the threshold
+FRONT_HALF_ANGLE_RAD = math.radians(30)  # only the forward +/-30 degree sector triggers a stop
 
-class SafetySupervisor(Node):
-    """Last stage before the motors: cmd_vel_nav -> [this node] -> cmd_vel.
-    Always active (independent of comms). Fail-safe on stale command or stale LiDAR."""
+
+def front_sector_min_range(angle_min, angle_increment, ranges, half_angle_rad=FRONT_HALF_ANGLE_RAD):
+    """Pure function, independent of ROS message types, so it's testable
+    without rclpy. angle_min/angle_increment come straight off the
+    LaserScan message -- ranges[i] corresponds to angle_min + i*increment,
+    which is the actual indexing contract, not an assumption that index 0
+    means straight ahead (it usually doesn't)."""
+    min_range = float('inf')
+    angle = angle_min
+    for r in ranges:
+        if abs(angle) <= half_angle_rad:
+            if not (r != r) and r > 0.01:  # reject NaN and zero/garbage readings
+                min_range = min(min_range, r)
+        angle += angle_increment
+    return min_range
+
+
+class SafetyFallbackWatchdog(Node):
+    """
+    Pure geometric last-resort safety layer, independent of spatial_mutex
+    and independent of any peer/negotiation state. Watches the LiDAR
+    front sector and publishes a STOP/CLEAR signal that waypoint_nav_node
+    treats as the highest-priority override -- above even a CLEAR mutex
+    clearance -- because "you have right of way" is a topological/temporal
+    statement, not a promise the space ahead is actually empty right now.
+
+    Previous version of this file waited on a 'peer_telemetry' heartbeat
+    that nothing in the system ever published, so it was permanently
+    stuck in "REACTIVE MODE" and published to 'cmd_vel_safe', a topic
+    nothing subscribed to -- it could never have actually stopped a
+    robot. This version has no heartbeat dependency at all: it is a
+    single-purpose LiDAR proximity check, and its output topic
+    ('emergency_stop') is consumed directly by waypoint_nav_node.
+    """
 
     def __init__(self):
-        super().__init__('safety_supervisor')
-        self.declare_parameter('stop_distance', 0.35)
-        self.declare_parameter('slow_distance', 0.80)
-        self.declare_parameter('front_half_angle_deg', 45.0)
-        self.declare_parameter('cmd_timeout_sec', 0.5)
-        self.declare_parameter('scan_timeout_sec', 0.5)
-        self.declare_parameter('require_scan', True)
+        super().__init__('safety_fallback_watchdog')
 
-        gp = lambda n: self.get_parameter(n).value
-        self.stop_d = gp('stop_distance')
-        self.slow_d = gp('slow_distance')
-        self.half = math.radians(gp('front_half_angle_deg'))
-        self.cmd_timeout = gp('cmd_timeout_sec')
-        self.scan_timeout = gp('scan_timeout_sec')
-        self.require_scan = gp('require_scan')
+        self.create_subscription(LaserScan, 'scan', self.scan_cb, 10)
+        self.stop_pub = self.create_publisher(String, 'emergency_stop', 10)
 
-        qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE,
-                         history=HistoryPolicy.KEEP_LAST, depth=10)
-        self.create_subscription(Twist, 'cmd_vel_nav', self.cmd_cb, qos)
-        self.create_subscription(LaserScan, 'scan', self.scan_cb, qos_profile_sensor_data)
-        self.cmd_pub = self.create_publisher(Twist, 'cmd_vel', qos)
-        self.state_pub = self.create_publisher(String, 'safety_state', qos)
-
-        self.cmd = Twist()
-        self.last_cmd_t = None
-        self.front_min = None
-        self.last_scan_t = None
-        self._state = None
-
-        self.create_timer(0.05, self.loop)
-        self.get_logger().info("Safety supervisor active (always-on LiDAR gate).")
-
-    def cmd_cb(self, msg: Twist):
-        self.cmd = msg
-        self.last_cmd_t = time.monotonic()
+        self.stopped = False
+        self.get_logger().info(
+            f"Safety Fallback Watchdog active: LiDAR front-sector "
+            f"(+/-{math.degrees(FRONT_HALF_ANGLE_RAD):.0f} deg) emergency stop "
+            f"below {SAFE_STOP_DISTANCE}m."
+        )
 
     def scan_cb(self, msg: LaserScan):
-        m = math.inf
-        a = msg.angle_min
-        for r in msg.ranges:
-            ang = math.atan2(math.sin(a), math.cos(a))
-            if -self.half <= ang <= self.half and math.isfinite(r) and msg.range_min <= r <= msg.range_max:
-                if r < m:
-                    m = r
-            a += msg.angle_increment
-        self.front_min = m
-        self.last_scan_t = time.monotonic()
+        if not msg.ranges:
+            return
 
-    def _set_state(self, s):
-        if s != self._state:
-            self._state = s
-            self.state_pub.publish(String(data=s))
-            if s != "OK":
-                self.get_logger().warn(f"safety_state -> {s}")
+        front_min = front_sector_min_range(msg.angle_min, msg.angle_increment, msg.ranges)
 
-    def loop(self):
-        now = time.monotonic()
-        out = Twist()
+        if not self.stopped and front_min < SAFE_STOP_DISTANCE:
+            self.stopped = True
+            self.get_logger().warn(
+                f"EMERGENCY STOP: obstacle at {front_min:.2f}m in front sector "
+                f"(threshold {SAFE_STOP_DISTANCE}m)."
+            )
+        elif self.stopped and front_min > CLEAR_HYSTERESIS_DISTANCE:
+            self.stopped = False
+            self.get_logger().info(
+                f"Front sector clear ({front_min:.2f}m) -- releasing emergency stop."
+            )
 
-        if self.last_cmd_t is None or now - self.last_cmd_t > self.cmd_timeout:
-            self._set_state("CMD_TIMEOUT")
-        elif self.require_scan and (self.last_scan_t is None or now - self.last_scan_t > self.scan_timeout):
-            self._set_state("FAILSAFE_NO_SCAN")
-        else:
-            out.linear.x = self.cmd.linear.x
-            out.angular.z = self.cmd.angular.z
-            state = "OK"
-            if out.linear.x > 0.0 and self.front_min is not None:
-                if self.front_min <= self.stop_d:
-                    out.linear.x = 0.0
-                    state = "STOP"
-                elif self.front_min < self.slow_d:
-                    out.linear.x *= (self.front_min - self.stop_d) / (self.slow_d - self.stop_d)
-                    state = "SLOW"
-            self._set_state(state)
-
-        self.cmd_pub.publish(out)
+        self.stop_pub.publish(String(data="STOP" if self.stopped else "CLEAR"))
 
 
 def main(args=None):
     rclpy.init(args=args)
-    node = SafetySupervisor()
+    node = SafetyFallbackWatchdog()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

@@ -34,11 +34,13 @@ class WaypointNavNode(Node):
         self.path_idx = 0
         self.blocked_edges = set()
         self.mutex_state = MUTEX_CLEAR
+        self.emergency_stop = False
         self.edge_announced = False
 
         self.create_subscription(Odometry, 'odom', self.odom_cb, 10)
         self.create_subscription(PoseStamped, 'goal_pose', self.goal_cb, 10)
         self.create_subscription(String, 'mutex_clearance', self.mutex_cb, 10)
+        self.create_subscription(String, 'emergency_stop', self.emergency_stop_cb, 10)
 
         self.cmd_vel_pub = self.create_publisher(Twist, 'cmd_vel', 10)
         self.planned_edge_pub = self.create_publisher(String, 'planned_edge', 10)
@@ -75,6 +77,9 @@ class WaypointNavNode(Node):
     def mutex_cb(self, msg: String):
         self.mutex_state = msg.data
 
+    def emergency_stop_cb(self, msg: String):
+        self.emergency_stop = (msg.data == "STOP")
+
     def current_edge(self):
         if self.path is None or self.path_idx >= len(self.path) - 1:
             return None
@@ -97,6 +102,18 @@ class WaypointNavNode(Node):
 
     def control_loop(self):
         twist = Twist()
+
+        if self.emergency_stop:
+            # Highest-priority check, before anything else -- including a
+            # CLEAR mutex clearance. The mutex granting right-of-way is a
+            # topological/temporal statement ("no other robot has reserved
+            # this edge right now"); it is not a promise that the physical
+            # space ahead is actually empty. This is the geometric backstop
+            # benchmark_stop_and_wait_vs_hybrid.py demonstrated is
+            # structurally necessary, now wired to a real LiDAR check
+            # (safety_fallback.py) instead of being unconsumed dead code.
+            self.cmd_vel_pub.publish(twist)
+            return
 
         if self.mutex_state == MUTEX_PARKED:
             self.cmd_vel_pub.publish(twist)
