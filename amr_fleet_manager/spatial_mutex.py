@@ -36,6 +36,21 @@ class SpatialMutex(Node):
         # broadcast message volume (every robot still publishes to
         # everyone) -- it only reduces what each robot evaluates.
         self.declare_parameter('neighbor_radius_m', 4 * nav_graph.CELL)
+        # Generalized communication-aware rejoin: the dropout/recovery
+        # handling below used to only exist inside enter_low_power_mode,
+        # which only fires on SELF-REPORTED CHARGING/SHIFT_CHANGE. A real
+        # Wi-Fi dropout during active negotiation was invisible to it --
+        # this robot would just silently prune the silent peer's stale
+        # data after peer_timeout_sec and report CLEAR based on absence
+        # of evidence. Validated in benchmark_comms_dropout_rejoin.py:
+        # under a 3s receive-side blackout from an actively-negotiating
+        # peer, the old (charging-only) logic reported CLEAR for 1.5s
+        # while the peer's edge was still genuinely occupied; this fix
+        # eliminates that window entirely, with no change to the correct
+        # CLEAR-by-default behavior when no peer has ever been heard from
+        # at all (fleet startup / genuinely isolated robot).
+        self.declare_parameter('comms_dropout_threshold_sec', 1.0)
+        self.declare_parameter('rejoin_grace_sec', 1.0)
 
         self.robot_id = self.get_parameter('robot_id').value
         self.base_priority = self.get_parameter('priority').value
@@ -45,6 +60,12 @@ class SpatialMutex(Node):
         self.hmac_key = self.get_parameter('hmac_key').value
         self.priority_aging_rate = self.get_parameter('priority_aging_rate').value
         self.neighbor_radius_m = self.get_parameter('neighbor_radius_m').value
+        self.comms_dropout_threshold = self.get_parameter('comms_dropout_threshold_sec').value
+        self.rejoin_grace = self.get_parameter('rejoin_grace_sec').value
+
+        self.last_seen_any_peer = None
+        self.in_comms_dropout = False
+        self.rejoin_until = None
 
         if self.hmac_key == 'sih26123-demo-preshared-key':
             self.get_logger().warn(
@@ -254,6 +275,18 @@ class SpatialMutex(Node):
             return
 
         peer_id = payload['id']
+
+        # Comms-health signal: any validly-signed message on the RELIABLE
+        # active channel proves the link is up right now, independent of
+        # whether this specific message turns out to be a stale replay
+        # below -- that's a separate concern (integrity of THIS message),
+        # not evidence about whether the link itself is alive. Only the
+        # active channel counts here, not the best-effort background
+        # listener -- that channel deliberately stays up during low-power
+        # states and would mask a real dropout on the channel actually
+        # used for negotiation decisions.
+        self.last_seen_any_peer = time.time()
+
         seq = payload.get('seq')
 
         if seq is None:
@@ -320,6 +353,42 @@ class SpatialMutex(Node):
     def mutex_loop(self):
         if self.self_state in PARKED_STATES:
             return
+
+        now = time.time()
+
+        # Generalized communication-aware dropout/rejoin -- see the
+        # comms_dropout_threshold_sec parameter comment for what this
+        # replaces and why. Runs for ANY active-state robot, not just
+        # ones recovering from a self-reported CHARGING pause.
+        if self.last_seen_any_peer is not None:
+            gap = now - self.last_seen_any_peer
+            if gap > self.comms_dropout_threshold:
+                if not self.in_comms_dropout:
+                    self.get_logger().warn(
+                        f"Comms dropout detected: no peer message received in "
+                        f"{gap:.1f}s (threshold {self.comms_dropout_threshold}s). "
+                        f"Holding -- refusing to report CLEAR based on absence "
+                        f"of data rather than confirmed clearance."
+                    )
+                    self.in_comms_dropout = True
+                self.clearance_pub.publish(String(data=MUTEX_WAIT))
+                return
+            elif self.in_comms_dropout:
+                self.in_comms_dropout = False
+                self.rejoin_until = now + self.rejoin_grace
+                self.get_logger().info(
+                    f"Comms recovered after a dropout -- holding for a "
+                    f"{self.rejoin_grace}s rejoin grace period before trusting "
+                    f"fresh peer data. Requesting a fleet-wide state resync."
+                )
+                self.request_state_sync()
+                self.publish_costmap_seed()
+
+        if self.rejoin_until is not None:
+            if now < self.rejoin_until:
+                self.clearance_pub.publish(String(data=MUTEX_WAIT))
+                return
+            self.rejoin_until = None
 
         self.prune_stale_peers()
 
