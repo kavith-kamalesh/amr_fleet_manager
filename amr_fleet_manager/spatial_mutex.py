@@ -4,9 +4,12 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import String
 import json
 import time
+import math
 
+from amr_fleet_manager import nav_graph
 from amr_fleet_manager.robot_common import (
     MUTEX_CLEAR, MUTEX_WAIT, MUTEX_REROUTE, MUTEX_PARKED,
+    sign_payload, verify_payload,
 )
 
 PARKED_STATES = ("CHARGING", "SHIFT_CHANGE")
@@ -21,12 +24,35 @@ class SpatialMutex(Node):
         self.declare_parameter('reservation_buffer_sec', 0.6)
         self.declare_parameter('reroute_wait_threshold_sec', 2.0)
         self.declare_parameter('peer_timeout_sec', 1.5)
+        self.declare_parameter('hmac_key', 'sih26123-demo-preshared-key')
+        self.declare_parameter('priority_aging_rate', 0.05)
+        # Distance-radius neighbor filter: a peer whose reserved edge is
+        # farther than this from our own current edge is skipped entirely
+        # before any conflict check. Validated in benchmark_scalability.py
+        # (4x grid CELL, i.e. 8.0m at the default CELL=2.0) -- 55-72%
+        # fewer conflict-check comparisons at every tested fleet size
+        # (3/6/12/24 robots), with IDENTICAL makespan/timeout/collision
+        # outcomes to the unfiltered version. This does not reduce
+        # broadcast message volume (every robot still publishes to
+        # everyone) -- it only reduces what each robot evaluates.
+        self.declare_parameter('neighbor_radius_m', 4 * nav_graph.CELL)
 
         self.robot_id = self.get_parameter('robot_id').value
-        self.priority = self.get_parameter('priority').value
+        self.base_priority = self.get_parameter('priority').value
         self.reservation_buffer = self.get_parameter('reservation_buffer_sec').value
         self.reroute_wait_threshold = self.get_parameter('reroute_wait_threshold_sec').value
         self.peer_timeout = self.get_parameter('peer_timeout_sec').value
+        self.hmac_key = self.get_parameter('hmac_key').value
+        self.priority_aging_rate = self.get_parameter('priority_aging_rate').value
+        self.neighbor_radius_m = self.get_parameter('neighbor_radius_m').value
+
+        if self.hmac_key == 'sih26123-demo-preshared-key':
+            self.get_logger().warn(
+                "hmac_key left at its default value -- override it via the "
+                "launch file / params yaml so all robots share the SAME key. "
+                "Every robot using the default independently is not secure, "
+                "it's just obscurity."
+            )
 
         qos_active = QoSProfile(reliability=ReliabilityPolicy.RELIABLE,
                                  history=HistoryPolicy.KEEP_LAST, depth=10)
@@ -61,9 +87,20 @@ class SpatialMutex(Node):
         self.reroute_requested = False
 
         self.peer_intents = {}
+        self.peer_last_seq = {}
+        self.out_seq = 0
 
         self.timer = self.create_timer(0.1, self.mutex_loop)
-        self.get_logger().info(f"SpatialMutex up for robot_id={self.robot_id}")
+        self.get_logger().info(
+            f"SpatialMutex up for robot_id={self.robot_id} "
+            f"(HMAC-signed intents, priority aging, neighbor_radius_m={self.neighbor_radius_m})"
+        )
+
+    def effective_priority(self):
+        if self.wait_start_time is None:
+            return self.base_priority
+        waited = time.time() - self.wait_start_time
+        return self.base_priority + self.priority_aging_rate * waited
 
     def planned_edge_callback(self, msg: String):
         try:
@@ -122,13 +159,14 @@ class SpatialMutex(Node):
         self.charge_start_time = None
 
     def background_peer_listener(self, msg: String):
-        try:
-            data = json.loads(msg.data)
-            peer_id = data['id']
-            if peer_id == self.robot_id:
-                return
-            nodes = data['nodes']
-        except (json.JSONDecodeError, KeyError, TypeError):
+        payload = self._parse_and_verify(msg.data, context="background")
+        if payload is None:
+            return
+        peer_id = payload.get('id')
+        if peer_id == self.robot_id:
+            return
+        nodes = payload.get('nodes')
+        if nodes is None:
             return
 
         now = time.time()
@@ -168,14 +206,34 @@ class SpatialMutex(Node):
 
         self.publish_current_intent_now()
 
-    def publish_current_intent_now(self):
-        payload = json.dumps({
-            'id': self.robot_id,
-            'nodes': [list(n) for n in self.current_edge_nodes],
-            'window': list(self.current_edge_window),
-            'priority': self.priority,
-        })
-        self.broadcast_pub.publish(String(data=payload))
+    def _next_seq(self):
+        self.out_seq += 1
+        return self.out_seq
+
+    def _sign_and_publish(self, publisher, payload: dict):
+        sig = sign_payload(payload, self.hmac_key)
+        publisher.publish(String(data=json.dumps({**payload, 'sig': sig})))
+
+    def _parse_and_verify(self, raw: str, context: str):
+        try:
+            data = json.loads(raw)
+            sig = data.pop('sig', None)
+            peer_id = data['id']
+        except (json.JSONDecodeError, KeyError, TypeError):
+            self.get_logger().warn(f"Malformed spatial_intent packet ({context}), dropping")
+            return None
+
+        if peer_id == self.robot_id:
+            return None
+
+        if not verify_payload(data, sig, self.hmac_key):
+            self.get_logger().warn(
+                f"REJECTED spatial_intent from id={peer_id} ({context}): "
+                f"bad or missing HMAC signature -- possible spoofed peer."
+            )
+            return None
+
+        return data
 
     def charging_list_callback(self, msg: String):
         try:
@@ -191,16 +249,32 @@ class SpatialMutex(Node):
         self.reroute_requested = False
 
     def peer_intent_callback(self, msg: String):
+        payload = self._parse_and_verify(msg.data, context="active")
+        if payload is None:
+            return
+
+        peer_id = payload['id']
+        seq = payload.get('seq')
+
+        if seq is None:
+            self.get_logger().warn(f"spatial_intent from id={peer_id} missing seq, dropping")
+            return
+
+        last_seq = self.peer_last_seq.get(peer_id)
+        if last_seq is not None and seq <= last_seq:
+            self.get_logger().warn(
+                f"REJECTED spatial_intent from id={peer_id}: seq={seq} <= last accepted "
+                f"seq={last_seq} -- replay or out-of-order delivery."
+            )
+            return
+        self.peer_last_seq[peer_id] = seq
+
         try:
-            data = json.loads(msg.data)
-            peer_id = data['id']
-            if peer_id == self.robot_id:
-                return
-            nodes = frozenset(tuple(n) for n in data['nodes'])
-            window = tuple(data['window'])
-            peer_priority = data.get('priority', 0.5)
-        except (json.JSONDecodeError, KeyError, TypeError):
-            self.get_logger().warn("Malformed spatial_intent packet, dropping")
+            nodes = frozenset(tuple(n) for n in payload['nodes'])
+            window = tuple(payload['window'])
+            peer_priority = payload.get('priority', 0.5)
+        except (KeyError, TypeError):
+            self.get_logger().warn(f"spatial_intent from id={peer_id} missing fields, dropping")
             return
 
         self.peer_intents[peer_id] = {
@@ -221,10 +295,25 @@ class SpatialMutex(Node):
     def windows_conflict(w1, w2):
         return not (w1[1] < w2[0] or w2[1] < w1[0])
 
+    @staticmethod
+    def _edge_midpoint(nodes_frozenset):
+        positions = [(n[0] * nav_graph.CELL, n[1] * nav_graph.CELL) for n in nodes_frozenset]
+        mx = sum(p[0] for p in positions) / len(positions)
+        my = sum(p[1] for p in positions) / len(positions)
+        return (mx, my)
+
+    @staticmethod
+    def _distance(p1, p2):
+        return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
+
     def peer_has_priority(self, pid, peer_priority):
-        if peer_priority > self.priority:
+        """True if the peer should go first. Both sides publish their
+        effective (aged) priority, so this comparison is symmetric and a
+        robot that has waited long enough always eventually wins."""
+        self_eff = self.effective_priority()
+        if peer_priority > self_eff:
             return True
-        if peer_priority < self.priority:
+        if peer_priority < self_eff:
             return False
         return pid < self.robot_id
 
@@ -241,7 +330,11 @@ class SpatialMutex(Node):
         blocked_by = None
 
         if self.current_edge_nodes is not None:
+            self_midpoint = self._edge_midpoint(self.current_edge_nodes)
             for pid, info in self.peer_intents.items():
+                peer_midpoint = self._edge_midpoint(info['nodes'])
+                if self._distance(self_midpoint, peer_midpoint) > self.neighbor_radius_m:
+                    continue
                 if not (self.current_edge_nodes & info['nodes']):
                     continue
                 if self.windows_conflict(self.current_edge_window, info['window']):
@@ -260,6 +353,16 @@ class SpatialMutex(Node):
             self.wait_start_time = None
 
         self.clearance_pub.publish(String(data=clearance))
+
+    def publish_current_intent_now(self):
+        payload = {
+            'id': self.robot_id,
+            'nodes': [list(n) for n in self.current_edge_nodes],
+            'window': list(self.current_edge_window),
+            'priority': self.effective_priority(),
+            'seq': self._next_seq(),
+        }
+        self._sign_and_publish(self.broadcast_pub, payload)
 
 
 def main(args=None):
