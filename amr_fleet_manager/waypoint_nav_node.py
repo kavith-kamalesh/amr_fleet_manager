@@ -32,7 +32,8 @@ class WaypointNavNode(Node):
 
         self.path = None
         self.path_idx = 0
-        self.blocked_edges = set()
+        self.blocked_edges = {}  # edge -> time.time() when blocked; expires after BLOCK_EXPIRY_SEC
+        self.BLOCK_EXPIRY_SEC = 5.0
         self.mutex_state = MUTEX_CLEAR
         self.emergency_stop = False
         self.edge_announced = False
@@ -134,9 +135,14 @@ class WaypointNavNode(Node):
         self.announce_current_edge()
 
         if self.mutex_state == MUTEX_REROUTE:
+            now = time.time()
+            self.blocked_edges = {
+                e: t for e, t in self.blocked_edges.items()
+                if now - t < self.BLOCK_EXPIRY_SEC
+            }
             current_node = self.path[self.path_idx]
             goal_node = self.path[-1]
-            self.blocked_edges.add(edge)
+            self.blocked_edges[edge] = now
             new_path = nav_graph.astar(current_node, goal_node, frozenset(self.blocked_edges))
             if new_path:
                 self.get_logger().warn(f"Rerouting around blocked edge {edge} -> {new_path}")
