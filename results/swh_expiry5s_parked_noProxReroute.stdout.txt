@@ -1,0 +1,31 @@
+
+=== stop_and_wait (200 trials) ===
+  Collisions (should be 0 for both -- correctness check): 0
+  Timed out (deadlocked, never all arrived):              152/200  (76.0%)
+  Mean makespan (completed trials only, sec):             9.08
+  Mean per-robot wait time (sec):                         25.28
+  Mean reroutes per trial:                                0.00
+
+=== hybrid (200 trials) ===
+  Collisions (should be 0 for both -- correctness check): 0
+  Timed out (deadlocked, never all arrived):              149/200  (74.5%)
+  Mean makespan (completed trials only, sec):             10.08
+  Mean per-robot wait time (sec):                         22.00
+  Mean reroutes per trial:                                19.05
+
+=== Head-to-head on the 38 trials where BOTH strategies completed ===
+  (Caveat: this subset is biased toward EASY scenarios, since it excludes
+   every trial where stop_and_wait deadlocked -- exactly the cases hybrid
+   exists to handle. Read this as 'overhead on easy conflicts', not the
+   headline number.)
+  stop_and_wait mean makespan: 8.84s
+  hybrid mean makespan:        9.26s
+  Difference:                  -4.8%
+
+=== Overall (all 200 trials, timeouts penalized at 60s -- the honest comparison) ===
+  stop_and_wait   success rate:  24.0%   mean completion time (incl. timeout penalty):  47.78s
+  hybrid          success rate:  25.5%   mean completion time (incl. timeout penalty):  47.27s
+
+  Overall improvement (hybrid vs stop_and_wait, timeouts included): +1.1%  (PS target: >= 20%)
+
+Raw per-trial data written to benchmark_results.csv

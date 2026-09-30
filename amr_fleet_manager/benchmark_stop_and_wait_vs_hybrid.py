@@ -105,6 +105,10 @@ BLOCK_EXPIRY_SEC = float(os.environ.get("BLOCK_EXPIRY_SEC", "5.0"))
 # 0: only a reservation conflict with a peer can trigger a reroute, matching the
 #    deployed node, where a physical block causes an e-stop, not a reroute.
 REROUTE_ON_GEOMETRIC = os.environ.get("REROUTE_ON_GEOMETRIC", "1") == "1"
+# 0 (default, legacy benchmark behavior): a robot that has arrived vanishes.
+# 1: it stays at its goal node as a physical obstacle: it still blocks others through the
+#    proximity guard and counts in collision checks, like a parked robot would.
+PARKED_BLOCKS = os.environ.get("PARKED_BLOCKS", "0") == "1"
 PRIORITY_AGING_RATE = 0.05
 TIMEOUT_SEC = 60.0
 MIN_SAFE_DIST = ROBOT_RADIUS * 2 + 0.1
@@ -214,7 +218,7 @@ def run_scenario(robots_config, strategy, timeout_sec=TIMEOUT_SEC):
                 prospective_pos = p1 + (p2 - p1) * prospective_progress
 
                 for other in robots:
-                    if other.id == robot.id or other.arrived:
+                    if other.id == robot.id or (other.arrived and not PARKED_BLOCKS):
                         continue
                     if np.linalg.norm(prospective_pos - other.pos) < MIN_SAFE_DIST:
                         geometrically_blocked = True
@@ -249,7 +253,7 @@ def run_scenario(robots_config, strategy, timeout_sec=TIMEOUT_SEC):
 
         for i in range(len(robots)):
             for j in range(i + 1, len(robots)):
-                if robots[i].arrived or robots[j].arrived:
+                if not PARKED_BLOCKS and (robots[i].arrived or robots[j].arrived):
                     continue
                 d = np.linalg.norm(robots[i].pos - robots[j].pos)
                 if d < ROBOT_RADIUS * 2:

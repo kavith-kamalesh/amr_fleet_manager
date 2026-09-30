@@ -28,3 +28,16 @@ rm -rf "$tmp"
 echo "=== expiry5s_noGeoReroute ==="
 python scripts/summarize_benchmarks.py results/swh_expiry5s_noGeoReroute.csv | sed -n 1,11p
 python scripts/analyze_timeout_sensitivity.py results/swh_expiry5s_noGeoReroute.csv | sed -n 1,9p
+
+# Rows 4-5: arrived robots STAY on the grid as physical obstacles (a parked robot is not invisible).
+# proxReroute = proximity (physical) blocks can trigger a reroute (the e-stop reroute in waypoint_nav_node).
+for pair in parked_proxReroute:1 parked_noProxReroute:0; do
+  name="${pair%%:*}"; geo="${pair##*:}"
+  tmp="$(mktemp -d)"
+  (cd "$tmp" && BLOCK_EXPIRY_SEC=5.0 PARKED_BLOCKS=1 REROUTE_ON_GEOMETRIC="$geo" PYTHONPATH="$REPO" python "$REPO/$BENCH" > "$REPO/results/swh_expiry5s_${name}.stdout.txt")
+  cp "$tmp/benchmark_results.csv" "results/swh_expiry5s_${name}.csv"
+  rm -rf "$tmp"
+  echo "=== expiry5s_${name} ==="
+  python scripts/summarize_benchmarks.py "results/swh_expiry5s_${name}.csv" | sed -n 1,11p
+  python scripts/analyze_timeout_sensitivity.py "results/swh_expiry5s_${name}.csv" | sed -n 1,9p
+done
