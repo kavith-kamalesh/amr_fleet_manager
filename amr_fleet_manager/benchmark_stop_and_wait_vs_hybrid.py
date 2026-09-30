@@ -97,6 +97,10 @@ DT = 0.05
 ROBOT_RADIUS = 0.3
 RESERVATION_BUFFER_SEC = 0.6
 REROUTE_WAIT_THRESHOLD_SEC = 2.0
+# Mirrors waypoint_nav_node.BLOCK_EXPIRY_SEC. Set env BLOCK_EXPIRY_SEC=inf to
+# reproduce the legacy never-expire behavior (pre commit 736f1c2).
+import os
+BLOCK_EXPIRY_SEC = float(os.environ.get("BLOCK_EXPIRY_SEC", "5.0"))
 PRIORITY_AGING_RATE = 0.05
 TIMEOUT_SEC = 60.0
 MIN_SAFE_DIST = ROBOT_RADIUS * 2 + 0.1
@@ -115,7 +119,7 @@ class SimRobot:
         self.reroute_count = 0
         self.arrived = False
         self.arrival_time = None
-        self.blocked_edges = set()
+        self.blocked_edges = {}
 
     def current_edge(self):
         if self.path is None or self.path_idx >= len(self.path) - 1:
@@ -220,7 +224,8 @@ def run_scenario(robots_config, strategy, timeout_sec=TIMEOUT_SEC):
                 if allow_reroute and (t - robot.wait_start_time) > REROUTE_WAIT_THRESHOLD_SEC:
                     current_node = robot.path[robot.path_idx]
                     goal_node = robot.path[-1]
-                    robot.blocked_edges.add(edge)
+                    robot.blocked_edges = {e: ts for e, ts in robot.blocked_edges.items() if t - ts < BLOCK_EXPIRY_SEC}
+                    robot.blocked_edges[edge] = t
                     new_path = astar(current_node, goal_node, frozenset(robot.blocked_edges))
                     if new_path:
                         robot.path = new_path
