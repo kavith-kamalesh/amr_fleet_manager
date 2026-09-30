@@ -8,8 +8,10 @@ plan_reroute - blocks the edge the robot is currently on (entries expire after
 
 
 class EstopTimer:
-    def __init__(self, threshold_sec):
+    def __init__(self, threshold_sec, rearm_sec=None):
         self.threshold_sec = float(threshold_sec)
+        # After firing, wait rearm_sec (default: same as threshold_sec) before firing again.
+        self.rearm_sec = self.threshold_sec if rearm_sec is None else float(rearm_sec)
         self._since = None
 
     def update(self, stopped, now):
@@ -20,7 +22,7 @@ class EstopTimer:
             self._since = now
             return False
         if now - self._since > self.threshold_sec:
-            self._since = now
+            self._since = now + (self.rearm_sec - self.threshold_sec)
             return True
         return False
 
@@ -62,3 +64,13 @@ class RerouteCooldown:
 
     def mark(self, now):
         self._last = now
+
+
+def turn_toward(yaw, cur_xy, target_xy, max_w=0.5, gain=1.5, deadband=0.1):
+    """Angular velocity for an in-place turn toward target_xy; 0.0 inside the deadband."""
+    import math
+    err = math.atan2(target_xy[1] - cur_xy[1], target_xy[0] - cur_xy[0]) - yaw
+    err = math.atan2(math.sin(err), math.cos(err))
+    if abs(err) < deadband:
+        return 0.0
+    return max(-max_w, min(max_w, gain * err))

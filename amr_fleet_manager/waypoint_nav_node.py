@@ -9,7 +9,7 @@ from nav_msgs.msg import Odometry
 from std_msgs.msg import String
 
 from amr_fleet_manager import nav_graph
-from amr_fleet_manager.reroute_policy import plan_reroute, EstopTimer, RerouteCooldown
+from amr_fleet_manager.reroute_policy import plan_reroute, EstopTimer, RerouteCooldown, turn_toward
 from amr_fleet_manager.robot_common import (
     MUTEX_CLEAR, MUTEX_WAIT, MUTEX_REROUTE, MUTEX_PARKED,
 )
@@ -27,12 +27,20 @@ class WaypointNavNode(Node):
         self.declare_parameter('estop_reroute_after_sec', 2.0)
         # Minimum seconds between mutex-driven reroutes (matches the mutex's own 2 s wait threshold).
         self.declare_parameter('reroute_cooldown_sec', 2.0)
+        # Seconds between successive e-stop reroutes (first one fires after estop_reroute_after_sec).
+        self.declare_parameter('estop_reroute_rearm_sec', 6.0)
+        # rad/s for turning in place while e-stopped after a reroute. 0.0 disables. Check the
+        # robot footprint before enabling on hardware.
+        self.declare_parameter('estop_turn_speed', 0.5)
 
         self.offset_x = self.get_parameter('spawn_offset_x').value
         self.offset_y = self.get_parameter('spawn_offset_y').value
         self.speed = self.get_parameter('robot_speed').value
-        self.estop_timer = EstopTimer(self.get_parameter('estop_reroute_after_sec').value)
+        self.estop_timer = EstopTimer(self.get_parameter('estop_reroute_after_sec').value,
+                                      rearm_sec=self.get_parameter('estop_reroute_rearm_sec').value)
         self.reroute_cooldown = RerouteCooldown(self.get_parameter('reroute_cooldown_sec').value)
+        self.estop_turnout = False
+        self.estop_turn_speed = self.get_parameter('estop_turn_speed').value
 
         self.current_x = 0.0
         self.current_y = 0.0
@@ -90,6 +98,7 @@ class WaypointNavNode(Node):
         self.emergency_stop = (msg.data == "STOP")
         if not self.emergency_stop:
             self.estop_timer.update(False, time.time())
+            self.estop_turnout = False
 
     def current_edge(self):
         if self.path is None or self.path_idx >= len(self.path) - 1:
@@ -123,11 +132,13 @@ class WaypointNavNode(Node):
             # benchmark_stop_and_wait_vs_hybrid.py demonstrated is
             # structurally necessary, now wired to a real LiDAR check
             # (safety_fallback.py) instead of being unconsumed dead code.
-            self.cmd_vel_pub.publish(twist)
+            # (the command is published at the end of this block, after any turn-out)
             # A LiDAR stop that persists means something physical is in the way. Waiting
             # for the mutex cannot fix that (the mutex only knows about reservations), so
             # after estop_reroute_after_sec block this edge and re-plan.
             fire = self.estop_timer.update(True, time.time())
+            if fire:
+                self.estop_turnout = True
             if fire and self.mutex_state != MUTEX_PARKED:
                 new_path, self.blocked_edges, blocked_edge = plan_reroute(
                     self.path, self.path_idx, self.blocked_edges,
@@ -144,6 +155,16 @@ class WaypointNavNode(Node):
                     else:
                         self.get_logger().warn(
                             f"Physically blocked at {blocked_edge}; no alternate route, holding.")
+            # After a persistent-stop reroute, rotate in place toward the new first hop (linear stays 0).
+            # A zero command leaves the robot facing what it stopped for, so the stop can never release
+            # (seen in the ROS smoke test with a fake LiDAR: 2 engagements, 0 releases, both robots stuck).
+            if self.estop_turnout and self.estop_turn_speed > 0.0 and self.path is not None:
+                cur = self.current_edge()
+                if cur is not None:
+                    tgt = nav_graph.node_pos(cur[1])
+                    twist.angular.z = turn_toward(self.current_yaw, (self.current_x, self.current_y),
+                                                  tgt, max_w=self.estop_turn_speed)
+            self.cmd_vel_pub.publish(twist)
             return
 
         if self.mutex_state == MUTEX_PARKED:

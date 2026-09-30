@@ -85,3 +85,22 @@ def test_cooldown_blocks_a_second_reroute_until_it_expires():
 def test_cooldown_is_ready_before_any_reroute():
     from amr_fleet_manager.reroute_policy import RerouteCooldown
     assert RerouteCooldown(5.0).ready(123.0) is True
+
+
+def test_timer_rearm_interval_is_longer_than_threshold_when_requested():
+    t = EstopTimer(2.0, rearm_sec=6.0)
+    t.update(True, 0.0)
+    assert t.update(True, 2.1) is True
+    assert t.update(True, 5.0) is False
+    assert t.update(True, 7.9) is False
+    assert t.update(True, 8.2) is True
+
+
+def test_turn_toward_direction_deadband_cap_and_wraparound():
+    import math
+    from amr_fleet_manager.reroute_policy import turn_toward
+    assert turn_toward(0.0, (0, 0), (0, 1)) > 0
+    assert turn_toward(0.0, (0, 0), (0, -1)) < 0
+    assert turn_toward(0.0, (0, 0), (1, 0.01)) == 0.0
+    assert abs(turn_toward(0.0, (0, 0), (-1, 0.001), max_w=0.5)) == 0.5
+    assert turn_toward(math.pi - 0.1, (0, 0), (-1, -0.2)) > 0
