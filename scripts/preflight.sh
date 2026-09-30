@@ -16,4 +16,7 @@ if [ -n "$DUPS" ]; then
   echo "WARNING: same filename exists in more than one place:"
   echo "$DUPS"
 fi
+echo "[4] analysis scripts run against committed results"
+python scripts/summarize_benchmarks.py > /dev/null
+python scripts/analyze_timeout_sensitivity.py > /dev/null
 echo "preflight OK"

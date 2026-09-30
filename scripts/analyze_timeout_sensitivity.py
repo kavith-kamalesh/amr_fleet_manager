@@ -6,7 +6,7 @@ import sys
 from collections import defaultdict
 
 BASE, NEW = "stop_and_wait", "hybrid"
-DEFAULT = "amr_fleet_manager/benchmark_stop_and_wait_vs_hybrid_results.csv"
+DEFAULT = "results/swh_expiry5s.csv"
 CAP = 60.0
 
 
