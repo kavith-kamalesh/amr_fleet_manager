@@ -5,6 +5,8 @@ from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String
 
+from amr_fleet_manager.speed_policy import safety_state
+
 # Matches the MIN_SAFE_DIST margin used in benchmark_stop_and_wait_vs_hybrid.py's
 # geometric safety layer -- that benchmark demonstrated this class of check is
 # structurally necessary: the topological mutex only governs who may ENTER a
@@ -13,6 +15,10 @@ from std_msgs.msg import String
 SAFE_STOP_DISTANCE = 0.45   # meters
 CLEAR_HYSTERESIS_DISTANCE = 0.55  # must clear past this before releasing, to avoid STOP/CLEAR flapping right at the threshold
 FRONT_HALF_ANGLE_RAD = math.radians(30)  # only the forward +/-30 degree sector triggers a stop
+# Inside this range (meters from the other robot's surface) publish SLOW so the nav node caps its speed.
+# At 1 m/s head-on the closing speed is 2 m/s, and one or two 10 Hz ticks of latency eat most of the
+# 0.45 m stop margin; slowing first keeps the stop margin meaningful. 0 disables.
+SLOW_DISTANCE = 1.5
 
 
 def front_sector_min_range(angle_min, angle_increment, ranges, half_angle_rad=FRONT_HALF_ANGLE_RAD):
@@ -80,7 +86,7 @@ class SafetyFallbackWatchdog(Node):
                 f"Front sector clear ({front_min:.2f}m) -- releasing emergency stop."
             )
 
-        self.stop_pub.publish(String(data="STOP" if self.stopped else "CLEAR"))
+        self.stop_pub.publish(String(data=safety_state(self.stopped, front_min, SLOW_DISTANCE)))
 
 
 def main(args=None):

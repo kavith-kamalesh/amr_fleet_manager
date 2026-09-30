@@ -10,6 +10,7 @@ from std_msgs.msg import String
 
 from amr_fleet_manager import nav_graph
 from amr_fleet_manager.reroute_policy import plan_reroute, EstopTimer, RerouteCooldown, turn_toward
+from amr_fleet_manager.speed_policy import speed_cap
 from amr_fleet_manager.robot_common import (
     MUTEX_CLEAR, MUTEX_WAIT, MUTEX_REROUTE, MUTEX_PARKED,
 )
@@ -32,6 +33,9 @@ class WaypointNavNode(Node):
         # rad/s for turning in place while e-stopped after a reroute. 0.0 disables. Check the
         # robot footprint before enabling on hardware.
         self.declare_parameter('estop_turn_speed', 0.5)
+        # Max linear speed (m/s) while safety_fallback reports SLOW (something ahead within its slow
+        # zone). 0 disables. Note: reservation windows still assume the full robot_speed.
+        self.declare_parameter('slow_zone_speed', 0.25)
 
         self.offset_x = self.get_parameter('spawn_offset_x').value
         self.offset_y = self.get_parameter('spawn_offset_y').value
@@ -41,6 +45,8 @@ class WaypointNavNode(Node):
         self.reroute_cooldown = RerouteCooldown(self.get_parameter('reroute_cooldown_sec').value)
         self.estop_turnout = False
         self.estop_turn_speed = self.get_parameter('estop_turn_speed').value
+        self.slow_zone_speed = self.get_parameter('slow_zone_speed').value
+        self.safety_state = 'CLEAR'
 
         self.current_x = 0.0
         self.current_y = 0.0
@@ -96,6 +102,7 @@ class WaypointNavNode(Node):
 
     def emergency_stop_cb(self, msg: String):
         self.emergency_stop = (msg.data == "STOP")
+        self.safety_state = msg.data
         if not self.emergency_stop:
             self.estop_timer.update(False, time.time())
             self.estop_turnout = False
@@ -234,7 +241,8 @@ class WaypointNavNode(Node):
             yaw_error += 2 * math.pi
 
         twist.angular.z = max(min(yaw_error * 1.5, 1.0), -1.0)
-        twist.linear.x = self.speed if abs(yaw_error) < 0.5 else 0.0
+        twist.linear.x = (speed_cap(self.safety_state, self.speed, self.slow_zone_speed)
+                          if abs(yaw_error) < 0.5 else 0.0)
 
         self.cmd_vel_pub.publish(twist)
 
