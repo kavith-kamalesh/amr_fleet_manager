@@ -125,8 +125,13 @@ def record(args):
         node.create_subscription(String, f"/{name}/emergency_stop", str_cb(name, "safety"), 10)
         node.create_subscription(Twist, f"/{name}/cmd_vel", cmd_cb(name), 10)
     end = t0 + args.duration
-    while time.monotonic() < end:
-        rclpy.spin_once(node, timeout_sec=0.1)
+    # time.monotonic() may not advance while the Mac sleeps, so also bound by wall-clock time.
+    wall_end = time.time() + args.duration + 5.0
+    try:
+        while time.monotonic() < end and time.time() < wall_end:
+            rclpy.spin_once(node, timeout_sec=0.1)
+    except KeyboardInterrupt:
+        pass  # still write what was recorded
     node.destroy_node()
     rclpy.shutdown()
     with open(args.out, "w", newline="") as f:
