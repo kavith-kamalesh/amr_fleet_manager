@@ -101,6 +101,10 @@ REROUTE_WAIT_THRESHOLD_SEC = 2.0
 # reproduce the legacy never-expire behavior (pre commit 736f1c2).
 import os
 BLOCK_EXPIRY_SEC = float(os.environ.get("BLOCK_EXPIRY_SEC", "5.0"))
+# 1 (default, legacy benchmark behavior): a geometric (proximity) block can trigger a reroute.
+# 0: only a reservation conflict with a peer can trigger a reroute, matching the
+#    deployed node, where a physical block causes an e-stop, not a reroute.
+REROUTE_ON_GEOMETRIC = os.environ.get("REROUTE_ON_GEOMETRIC", "1") == "1"
 PRIORITY_AGING_RATE = 0.05
 TIMEOUT_SEC = 60.0
 MIN_SAFE_DIST = ROBOT_RADIUS * 2 + 0.1
@@ -221,7 +225,7 @@ def run_scenario(robots_config, strategy, timeout_sec=TIMEOUT_SEC):
                     robot.wait_start_time = t
                 robot.total_wait_time += DT
 
-                if allow_reroute and (t - robot.wait_start_time) > REROUTE_WAIT_THRESHOLD_SEC:
+                if allow_reroute and (REROUTE_ON_GEOMETRIC or blocked_by is not None) and (t - robot.wait_start_time) > REROUTE_WAIT_THRESHOLD_SEC:
                     current_node = robot.path[robot.path_idx]
                     goal_node = robot.path[-1]
                     robot.blocked_edges = {e: ts for e, ts in robot.blocked_edges.items() if t - ts < BLOCK_EXPIRY_SEC}
