@@ -20,3 +20,15 @@ def test_overlap_is_reported_with_duration_and_path_length():
     assert r["min_d"] == 0.0
     assert r["breach_s"] == 2.0 and r["first_breach"] == 1.0
     assert abs(r["travelled"]["a"] - 3.0) < 1e-9
+
+
+def test_pair_breaches_counts_time_even_with_a_third_robot_interleaved():
+    rows = []
+    for k in range(21):
+        t = k * 0.1
+        rows += [(t, "a", 0.0, 0.0), (t, "b", 0.2, 0.0), (t, "c", 9.0, 9.0)]
+    secs, mins, any_s = smoke_odom.pair_breaches(rows, 0.7)
+    assert abs(secs[("a", "b")] - 2.1) < 0.15
+    assert ("a", "c") not in secs
+    assert abs(any_s - secs[("a", "b")]) < 1e-9
+    assert abs(mins[("a", "b")] - 0.2) < 1e-9

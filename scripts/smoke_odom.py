@@ -44,6 +44,31 @@ def analyze_rows(rows, threshold):
             "travelled": dict(travelled), "samples": len(rows)}
 
 
+def pair_breaches(rows, threshold, step=0.1):
+    """Per-pair seconds below `threshold` and minimum distance, sampled on a fixed time grid.
+    Returns (pair_seconds, pair_min_distance, seconds_any_pair_below)."""
+    import itertools
+    rows = sorted(rows, key=lambda r: r[0])
+    last, seconds, min_d, any_s, idx = {}, defaultdict(float), {}, 0.0, 0
+    t, t_end = rows[0][0], rows[-1][0]
+    while t <= t_end:
+        while idx < len(rows) and rows[idx][0] <= t:
+            _, n, x, y = rows[idx]
+            last[n] = (x, y)
+            idx += 1
+        hit = False
+        for a, b in itertools.combinations(sorted(last), 2):
+            d = math.dist(last[a], last[b])
+            min_d[(a, b)] = min(min_d.get((a, b), math.inf), d)
+            if d < threshold:
+                seconds[(a, b)] += step
+                hit = True
+        if hit:
+            any_s += step
+        t += step
+    return dict(seconds), min_d, any_s
+
+
 def record(args):
     import rclpy
     from nav_msgs.msg import Odometry
@@ -85,8 +110,10 @@ def analyze(args):
     if r["min_at"]:
         t, a, b = r["min_at"]
         print(f"MIN SEPARATION : {r['min_d']:.3f} m at t={t:.1f}s between {a} and {b}")
-    print(f"time below {thr:.2f} m : {r['breach_s']:.1f} s"
-          + (f" (first t={r['first_breach']:.1f}s, last t={r['last_breach']:.1f}s)" if r["first_breach"] is not None else ""))
+    secs, mins, any_s = pair_breaches(rows, thr)
+    print(f"time any pair below {thr:.2f} m : {any_s:.1f} s")
+    for pair in sorted(mins):
+        print(f"  pair {pair[0]}-{pair[1]}: min {mins[pair]:.3f} m, below {thr:.2f} m for {secs.get(pair, 0.0):.1f} s")
     for name in r["robots"]:
         fx, fy = r["final"][name]
         print(f"  {name}: travelled {r['travelled'].get(name, 0):.1f} m, ended at ({fx:.1f}, {fy:.1f})")
