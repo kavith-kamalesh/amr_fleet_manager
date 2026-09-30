@@ -6,7 +6,7 @@ import sys
 from collections import defaultdict
 
 SWH = "amr_fleet_manager/benchmark_stop_and_wait_vs_hybrid_results.csv"
-FA = "amr_fleet_manager/benchmark_fifo_vs_auction_results.csv"
+FA = "amr_fleet_manager/auction_results.csv"
 
 
 def load(path):
