@@ -12,7 +12,7 @@ echo "executables installed: $(ros2 pkg executables amr_fleet_manager | wc -l)"
 
 STRAYS="ros2 launch amr_fleet_manager|ros2 bag record|install/amr_fleet_manager/lib|smoke_odom.py|sim_lidar.py"
 pkill -TERM -f "$STRAYS" 2>/dev/null; sleep 2; pkill -KILL -f "$STRAYS" 2>/dev/null
-rm -f /tmp/smoke_launch.log /tmp/smoke_odom.csv /tmp/smoke_odom_events.csv /tmp/graph_snapshot.txt /tmp/rec.log
+rm -f /tmp/smoke_launch.log /tmp/smoke_odom.csv /tmp/smoke_odom_events.csv /tmp/graph_snapshot.txt /tmp/sim_lidar.log /tmp/rec.log
 mkdir -p "$HOME/smoke_logs"
 
 python "$REPO/scripts/smoke_odom.py" record --duration "$DURATION" --out /tmp/smoke_odom.csv > /tmp/rec.log 2>&1 &
@@ -33,6 +33,7 @@ pkill -KILL -f "$STRAYS" 2>/dev/null
 cp /tmp/smoke_launch.log "$HOME/smoke_logs/$LABEL.log"; cp /tmp/smoke_odom.csv "$HOME/smoke_logs/$LABEL.csv" 2>/dev/null
 cp /tmp/smoke_odom_events.csv "$HOME/smoke_logs/$LABEL.events.csv" 2>/dev/null
 cp /tmp/graph_snapshot.txt "$HOME/smoke_logs/$LABEL.graph.txt" 2>/dev/null
+cp /tmp/sim_lidar.log "$HOME/smoke_logs/$LABEL.lidar.log" 2>/dev/null
 echo "=== recorder ==="; cat /tmp/rec.log
 echo "=== events ==="
 grep -E "Dispatched|New FMS goal|Goal reached|Rerouting|Physically|EMERGENCY|Front sector clear|Traceback" /tmp/smoke_launch.log | cut -c1-190 | head -40
