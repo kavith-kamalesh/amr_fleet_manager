@@ -9,6 +9,7 @@ from nav_msgs.msg import Odometry
 from std_msgs.msg import String
 
 from amr_fleet_manager import nav_graph
+from amr_fleet_manager.reroute_policy import plan_reroute, EstopTimer
 from amr_fleet_manager.robot_common import (
     MUTEX_CLEAR, MUTEX_WAIT, MUTEX_REROUTE, MUTEX_PARKED,
 )
@@ -21,10 +22,14 @@ class WaypointNavNode(Node):
         self.declare_parameter('spawn_offset_x', 0.0)
         self.declare_parameter('spawn_offset_y', 0.0)
         self.declare_parameter('robot_speed', 1.0)
+        # Seconds of continuous LiDAR e-stop before the current edge is blocked and
+        # the route re-planned. 0 disables (previous behavior: wait for the stop to clear).
+        self.declare_parameter('estop_reroute_after_sec', 2.0)
 
         self.offset_x = self.get_parameter('spawn_offset_x').value
         self.offset_y = self.get_parameter('spawn_offset_y').value
         self.speed = self.get_parameter('robot_speed').value
+        self.estop_timer = EstopTimer(self.get_parameter('estop_reroute_after_sec').value)
 
         self.current_x = 0.0
         self.current_y = 0.0
@@ -80,6 +85,8 @@ class WaypointNavNode(Node):
 
     def emergency_stop_cb(self, msg: String):
         self.emergency_stop = (msg.data == "STOP")
+        if not self.emergency_stop:
+            self.estop_timer.update(False, time.time())
 
     def current_edge(self):
         if self.path is None or self.path_idx >= len(self.path) - 1:
@@ -114,6 +121,26 @@ class WaypointNavNode(Node):
             # structurally necessary, now wired to a real LiDAR check
             # (safety_fallback.py) instead of being unconsumed dead code.
             self.cmd_vel_pub.publish(twist)
+            # A LiDAR stop that persists means something physical is in the way. Waiting
+            # for the mutex cannot fix that (the mutex only knows about reservations), so
+            # after estop_reroute_after_sec block this edge and re-plan.
+            fire = self.estop_timer.update(True, time.time())
+            if fire and self.mutex_state != MUTEX_PARKED:
+                new_path, self.blocked_edges, blocked_edge = plan_reroute(
+                    self.path, self.path_idx, self.blocked_edges,
+                    time.time(), self.BLOCK_EXPIRY_SEC, nav_graph.astar,
+                )
+                if blocked_edge is not None:
+                    if new_path:
+                        self.get_logger().warn(
+                            f"Physically blocked > {self.estop_timer.threshold_sec}s; "
+                            f"rerouting around {blocked_edge} -> {new_path}")
+                        self.path = new_path
+                        self.path_idx = 0
+                        self.edge_announced = False
+                    else:
+                        self.get_logger().warn(
+                            f"Physically blocked at {blocked_edge}; no alternate route, holding.")
             return
 
         if self.mutex_state == MUTEX_PARKED:
