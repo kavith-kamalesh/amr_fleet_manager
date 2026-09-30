@@ -44,7 +44,9 @@ import os
 # Pre-shared HMAC key for spatial_mutex intent signing. Every robot in
 # the fleet must be launched with the SAME key, or they'll reject each
 # other's signed intents as invalid. Roadmap: SROS2 / per-robot X.509.
-FLEET_SHARED_KEY = 'sih26123-team-codecircuit-demo-key'
+# Set FLEET_HMAC_KEY in the environment for any real deployment. The fallback below is a
+# public DEMO key (it is in git history): fine for simulation, worthless as a secret.
+FLEET_SHARED_KEY = os.environ.get('FLEET_HMAC_KEY', 'sih26123-team-codecircuit-demo-key')
 
 
 def generate_launch_description():
