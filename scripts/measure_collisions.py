@@ -42,6 +42,7 @@ def main():
             if d < collide_dist: breaches.append((t, r1, r2, d))
             
     duration = max(poses) if poses else 0.0
+    n_robots = len({r for snap in poses.values() for r in snap})
     print("=" * 60 + "\nCOLLISION ANALYSIS\n" + "=" * 60)
     print(f"duration             : {duration:.2f} s")
     print(f"MINIMUM SEPARATION   : {min_d:.3f} m")
@@ -49,7 +50,7 @@ def main():
     print("=" * 60)
     
     if len(breaches) == 0:
-        print(f"\nSLIDE-READY LINE:\n\"Minimum inter-robot separation of {min_d:.2f} m recorded across a {duration:.1f}s, 6-robot mission -- zero breaches of the {collide_dist:.2f} m collision threshold.\"")
+        print(f"\nSLIDE-READY LINE:\n\"Minimum inter-robot separation of {min_d:.2f} m recorded across a {duration:.1f}s, {n_robots}-robot mission -- zero breaches of the {collide_dist:.2f} m collision threshold.\"")
     else:
         print(f"\n*** {len(breaches)} COLLISION EVENTS DETECTED ***")
 
