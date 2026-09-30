@@ -9,7 +9,7 @@ from nav_msgs.msg import Odometry
 from std_msgs.msg import String
 
 from amr_fleet_manager import nav_graph
-from amr_fleet_manager.reroute_policy import plan_reroute, EstopTimer
+from amr_fleet_manager.reroute_policy import plan_reroute, EstopTimer, RerouteCooldown
 from amr_fleet_manager.robot_common import (
     MUTEX_CLEAR, MUTEX_WAIT, MUTEX_REROUTE, MUTEX_PARKED,
 )
@@ -25,11 +25,14 @@ class WaypointNavNode(Node):
         # Seconds of continuous LiDAR e-stop before the current edge is blocked and
         # the route re-planned. 0 disables (previous behavior: wait for the stop to clear).
         self.declare_parameter('estop_reroute_after_sec', 2.0)
+        # Minimum seconds between mutex-driven reroutes (matches the mutex's own 2 s wait threshold).
+        self.declare_parameter('reroute_cooldown_sec', 2.0)
 
         self.offset_x = self.get_parameter('spawn_offset_x').value
         self.offset_y = self.get_parameter('spawn_offset_y').value
         self.speed = self.get_parameter('robot_speed').value
         self.estop_timer = EstopTimer(self.get_parameter('estop_reroute_after_sec').value)
+        self.reroute_cooldown = RerouteCooldown(self.get_parameter('reroute_cooldown_sec').value)
 
         self.current_x = 0.0
         self.current_y = 0.0
@@ -162,6 +165,10 @@ class WaypointNavNode(Node):
         self.announce_current_edge()
 
         if self.mutex_state == MUTEX_REROUTE:
+            if not self.reroute_cooldown.ready(time.time()):
+                # Stale REROUTE from before the last reroute: hold until the mutex catches up.
+                self.cmd_vel_pub.publish(twist)
+                return
             now = time.time()
             self.blocked_edges = {
                 e: t for e, t in self.blocked_edges.items()
@@ -173,11 +180,12 @@ class WaypointNavNode(Node):
             new_path = nav_graph.astar(current_node, goal_node, frozenset(self.blocked_edges))
             if new_path:
                 self.get_logger().warn(f"Rerouting around blocked edge {edge} -> {new_path}")
+                self.reroute_cooldown.mark(now)
                 self.path = new_path
                 self.path_idx = 0
                 self.edge_announced = False
             else:
-                self.get_logger().warn(f"No alternate route around {edge}; continuing to wait.")
+                self.get_logger().warn(f"No alternate route around {edge}; continuing to wait.", throttle_duration_sec=2.0)
             self.cmd_vel_pub.publish(twist)
             return
 

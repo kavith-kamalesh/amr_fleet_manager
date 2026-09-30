@@ -70,3 +70,18 @@ def test_plan_reroute_no_alternative_still_records_block():
     assert edge == ((1, 0), (2, 0)) and edge in blocked
     assert seen["args"][0] == (1, 0) and seen["args"][1] == (2, 0)
     assert isinstance(seen["args"][2], frozenset)
+
+
+def test_cooldown_blocks_a_second_reroute_until_it_expires():
+    from amr_fleet_manager.reroute_policy import RerouteCooldown
+    c = RerouteCooldown(2.0)
+    assert c.ready(0.0) is True
+    c.mark(0.0)
+    assert c.ready(0.1) is False
+    assert c.ready(1.9) is False
+    assert c.ready(2.0) is True
+
+
+def test_cooldown_is_ready_before_any_reroute():
+    from amr_fleet_manager.reroute_policy import RerouteCooldown
+    assert RerouteCooldown(5.0).ready(123.0) is True

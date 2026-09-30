@@ -42,3 +42,23 @@ def plan_reroute(path, path_idx, blocked_edges, now, expiry_sec, astar):
     blocked[edge] = now
     new_path = astar(path[path_idx], path[-1], frozenset(blocked))
     return new_path, blocked, edge
+
+
+class RerouteCooldown:
+    """Ignore further reroute requests for cooldown_sec after one was applied.
+
+    After a reroute the node still holds the previous REROUTE_REQUESTED message until the
+    mutex publishes a fresh clearance for the new edge; acting on that stale message blocks
+    the new path's first edge too. The benchmark avoids this by resetting its wait timer, so
+    this makes the node match it.
+    """
+
+    def __init__(self, cooldown_sec):
+        self.cooldown_sec = float(cooldown_sec)
+        self._last = None
+
+    def ready(self, now):
+        return self._last is None or now - self._last >= self.cooldown_sec
+
+    def mark(self, now):
+        self._last = now
