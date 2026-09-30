@@ -10,7 +10,14 @@ def main():
     ap.add_argument("bag_dir")
     ap.add_argument("--radius", type=float, default=0.35, help="robot radius in meters")
     ap.add_argument("--bin", type=float, default=0.1, help="time bucket in seconds")
+    ap.add_argument("--offset", action="append", default=[], metavar="ROBOT=X,Y",
+                    help="spawn offset added to that robot's odom (repeatable); defaults match the launch files")
     a = ap.parse_args()
+    offsets = {"robot1": (0.0, 0.0), "robot2": (4.0, 0.0), "robot3": (0.0, 4.0)}
+    for item in a.offset:
+        name, xy = item.split("=")
+        ox, oy = xy.split(",")
+        offsets[name] = (float(ox), float(oy))
     collide_dist = 2 * a.radius
     poses = defaultdict(dict)
     
@@ -25,7 +32,8 @@ def main():
             if t0 is None: t0 = ts
             t = round((ts - t0) / 1e9 / a.bin) * a.bin
             robot_id = conn.topic.split("/")[1]
-            poses[t][robot_id] = (msg.pose.pose.position.x, msg.pose.pose.position.y)
+            ox, oy = offsets.get(robot_id, (0.0, 0.0))
+            poses[t][robot_id] = (msg.pose.pose.position.x + ox, msg.pose.pose.position.y + oy)
             
     min_d = float("inf")
     min_at = None
