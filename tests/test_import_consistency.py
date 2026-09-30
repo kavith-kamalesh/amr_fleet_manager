@@ -23,7 +23,7 @@ import ast
 import os
 import sys
 
-PACKAGE_DIR = os.path.join(os.path.dirname(__file__), '..', 'amr_fleet_manager', 'amr_fleet_manager')
+PACKAGE_DIR = os.path.join(os.path.dirname(__file__), '..', 'amr_fleet_manager')
 
 
 def _module_files():
@@ -144,4 +144,6 @@ def test_package_dir_is_actually_found():
     tests above are silently checking nothing, which is worse than not
     running them at all."""
     assert os.path.isdir(PACKAGE_DIR), f"expected package dir at {PACKAGE_DIR}"
-    assert len(_module_files()) > 0, "found the package dir but zero .py files in it"
+    mods = _module_files()
+    assert len(mods) >= 10, f"only {len(mods)} modules found; PACKAGE_DIR is probably wrong"
+    assert "spatial_mutex" in mods and "robot_common" in mods, "core modules missing from scanned dir"
