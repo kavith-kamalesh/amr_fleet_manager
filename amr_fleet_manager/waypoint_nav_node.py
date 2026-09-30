@@ -56,7 +56,12 @@ class WaypointNavNode(Node):
         self.path = None
         self.path_idx = 0
         self.blocked_edges = {}  # edge -> time.time() when blocked; expires after BLOCK_EXPIRY_SEC
-        self.BLOCK_EXPIRY_SEC = 5.0
+        # Seconds an edge stays avoided after it blocked us. It must comfortably exceed the interval
+        # between e-stop reroutes (estop_reroute_rearm_sec plus turn and release time, ~10 s observed),
+        # or the robot forgets its previous blocked edge and flip-flops between two parked robots
+        # (seen in the 90 s ROS run). Default 5.0 = previous behavior.
+        self.declare_parameter('block_expiry_sec', 5.0)
+        self.BLOCK_EXPIRY_SEC = self.get_parameter('block_expiry_sec').value
         self.mutex_state = MUTEX_CLEAR
         self.emergency_stop = False
         self.edge_announced = False

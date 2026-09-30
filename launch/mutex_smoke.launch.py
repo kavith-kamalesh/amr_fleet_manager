@@ -1,3 +1,5 @@
+import os
+
 from launch import LaunchDescription
 from launch_ros.actions import Node
 
@@ -19,7 +21,8 @@ def generate_launch_description():
         ld.add_action(Node(package='amr_fleet_manager', executable='waypoint_nav_node',
                            name='waypoint_nav_node', namespace=ns, output='screen',
                            parameters=[{'robot_id': c['id'],
-                                        'spawn_offset_x': c['x'], 'spawn_offset_y': c['y']}]))
+                                        'spawn_offset_x': c['x'], 'spawn_offset_y': c['y'],
+                                        'block_expiry_sec': float(os.environ.get('BLOCK_EXPIRY_SEC', '5.0'))}]))
         ld.add_action(Node(package='amr_fleet_manager', executable='spatial_mutex',
                            name='spatial_mutex', namespace=ns, output='screen',
                            parameters=[{'robot_id': c['id'], 'priority': c['priority']}]))
