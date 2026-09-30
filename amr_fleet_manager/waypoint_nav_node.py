@@ -9,7 +9,7 @@ from nav_msgs.msg import Odometry
 from std_msgs.msg import String
 
 from amr_fleet_manager import nav_graph
-from amr_fleet_manager.reroute_policy import plan_reroute, EstopTimer, RerouteCooldown, turn_toward
+from amr_fleet_manager.reroute_policy import plan_reroute, EstopTimer, RerouteCooldown, turn_toward, GoalGate
 from amr_fleet_manager.speed_policy import speed_cap
 from amr_fleet_manager.robot_common import (
     MUTEX_CLEAR, MUTEX_WAIT, MUTEX_REROUTE, MUTEX_PARKED,
@@ -47,6 +47,7 @@ class WaypointNavNode(Node):
         self.estop_turn_speed = self.get_parameter('estop_turn_speed').value
         self.slow_zone_speed = self.get_parameter('slow_zone_speed').value
         self.safety_state = 'CLEAR'
+        self.goal_gate = GoalGate()
 
         self.current_x = 0.0
         self.current_y = 0.0
@@ -82,10 +83,20 @@ class WaypointNavNode(Node):
         siny_cosp = 2 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
         self.current_yaw = math.atan2(siny_cosp, cosy_cosp)
+        pending = self.goal_gate.on_odom()
+        if pending is not None:
+            self.plan_goal(*pending)
 
     def goal_cb(self, msg: PoseStamped):
+        gx, gy = msg.pose.position.x, msg.pose.position.y
+        if self.goal_gate.on_goal((gx, gy)) is None:
+            self.get_logger().info(f"Goal ({gx}, {gy}) arrived before the first odom; planning once odom is received.")
+            return
+        self.plan_goal(gx, gy)
+
+    def plan_goal(self, gx, gy):
         start_node = nav_graph.node_of(self.current_x, self.current_y)
-        goal_node = nav_graph.node_of(msg.pose.position.x, msg.pose.position.y)
+        goal_node = nav_graph.node_of(gx, gy)
 
         self.blocked_edges.clear()
         self.path = nav_graph.astar(start_node, goal_node, frozenset(self.blocked_edges))
@@ -95,7 +106,7 @@ class WaypointNavNode(Node):
         if self.path is None:
             self.get_logger().error(f"No A* path from {start_node} to {goal_node}")
         else:
-            self.get_logger().info(f"New FMS goal ({msg.pose.position.x}, {msg.pose.position.y}) -> path {self.path}")
+            self.get_logger().info(f"New FMS goal ({gx}, {gy}) -> path {self.path}")
 
     def mutex_cb(self, msg: String):
         self.mutex_state = msg.data

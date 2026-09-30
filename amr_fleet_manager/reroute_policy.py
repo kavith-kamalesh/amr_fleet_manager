@@ -74,3 +74,31 @@ def turn_toward(yaw, cur_xy, target_xy, max_w=0.5, gain=1.5, deadband=0.1):
     if abs(err) < deadband:
         return 0.0
     return max(-max_w, min(max_w, gain * err))
+
+
+class GoalGate:
+    """Hold a goal that arrives before the first odometry message.
+
+    Before the first odom the node's position is its 0.0 default (spawn offset not yet applied),
+    so planning then starts from the wrong grid node -- or, for a goal within half a cell of the
+    origin, from the goal itself, giving a one-node path that reports "Goal reached" instantly.
+    """
+
+    def __init__(self):
+        self.ready = False
+        self.pending = None
+
+    def on_goal(self, goal_xy):
+        """Returns goal_xy if it can be planned now, else stores it and returns None."""
+        if self.ready:
+            return goal_xy
+        self.pending = goal_xy
+        return None
+
+    def on_odom(self):
+        """Call on every odom message. Returns the stored goal exactly once, on the first odom."""
+        if self.ready:
+            return None
+        self.ready = True
+        goal, self.pending = self.pending, None
+        return goal

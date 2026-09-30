@@ -30,7 +30,7 @@ cp /tmp/smoke_launch.log "$HOME/smoke_logs/$LABEL.log"; cp /tmp/smoke_odom.csv "
 echo "=== recorder ==="; cat /tmp/rec.log
 echo "=== events ==="
 grep -E "Dispatched|New FMS goal|Goal reached|Rerouting|Physically|EMERGENCY|Front sector clear|Traceback" /tmp/smoke_launch.log | cut -c1-190 | head -40
-echo "reroute events: $(grep -c 'Rerouting around' /tmp/smoke_launch.log)   'no alternate route' lines: $(grep -c 'No alternate route' /tmp/smoke_launch.log)"
+echo "reroute events: $(grep -ci 'rerouting around' /tmp/smoke_launch.log)   'no alternate route' lines: $(grep -c 'No alternate route' /tmp/smoke_launch.log)"
 echo "=== separation ==="
 python "$REPO/scripts/smoke_odom.py" analyze --csv /tmp/smoke_odom.csv
 echo "e-stop engagements: $(grep -c 'EMERGENCY STOP' /tmp/smoke_launch.log)   releases: $(grep -c 'releasing emergency stop' /tmp/smoke_launch.log)"

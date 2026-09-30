@@ -104,3 +104,34 @@ def test_turn_toward_direction_deadband_cap_and_wraparound():
     assert turn_toward(0.0, (0, 0), (1, 0.01)) == 0.0
     assert abs(turn_toward(0.0, (0, 0), (-1, 0.001), max_w=0.5)) == 0.5
     assert turn_toward(math.pi - 0.1, (0, 0), (-1, -0.2)) > 0
+
+
+def test_goal_before_first_odom_is_held_then_released_exactly_once():
+    from amr_fleet_manager.reroute_policy import GoalGate
+    g = GoalGate()
+    assert g.on_goal((3.0, 0.0)) is None
+    assert g.on_odom() == (3.0, 0.0)
+    assert g.on_odom() is None
+
+
+def test_goal_after_first_odom_is_planned_immediately():
+    from amr_fleet_manager.reroute_policy import GoalGate
+    g = GoalGate()
+    assert g.on_odom() is None
+    assert g.on_goal((1.0, 2.0)) == (1.0, 2.0)
+
+
+def test_latest_early_goal_wins():
+    from amr_fleet_manager.reroute_policy import GoalGate
+    g = GoalGate()
+    g.on_goal((1.0, 1.0))
+    g.on_goal((2.0, 2.0))
+    assert g.on_odom() == (2.0, 2.0)
+
+
+def test_documents_the_bug_default_position_gives_a_one_node_path():
+    from amr_fleet_manager import nav_graph
+    start = nav_graph.node_of(0.0, 0.0)   # un-offset default before the first odom
+    goal = nav_graph.node_of(1.0, 0.0)    # round(0.5) == 0 in Python 3
+    assert start == goal == (0, 0)
+    assert nav_graph.astar(start, goal) == [(0, 0)]
