@@ -22,3 +22,23 @@ def test_speed_cap_only_applies_in_slow_state():
     assert speed_cap("STOP", 1.0, 0.25) == 1.0
     assert speed_cap("SLOW", 0.2, 0.25) == 0.2
     assert speed_cap("SLOW", 1.0, 0.0) == 1.0
+
+
+def test_watchdog_disabled_when_timeout_is_zero():
+    from amr_fleet_manager.speed_policy import SafetyWatchdog
+    assert SafetyWatchdog(0, 0.0).silent(1000.0) is False
+
+
+def test_watchdog_goes_silent_after_timeout_and_heard_resets_it():
+    from amr_fleet_manager.speed_policy import SafetyWatchdog
+    w = SafetyWatchdog(2.0, 10.0)
+    assert w.silent(11.9) is False
+    assert w.silent(12.1) is True
+    w.heard(12.1)
+    assert w.silent(13.0) is False
+    assert w.silent(14.2) is True
+
+
+def test_watchdog_counts_silence_from_construction_if_never_heard():
+    from amr_fleet_manager.speed_policy import SafetyWatchdog
+    assert SafetyWatchdog(2.0, 100.0).silent(102.5) is True

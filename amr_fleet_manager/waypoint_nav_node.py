@@ -10,7 +10,7 @@ from std_msgs.msg import String
 
 from amr_fleet_manager import nav_graph
 from amr_fleet_manager.reroute_policy import plan_reroute, EstopTimer, RerouteCooldown, turn_toward, GoalGate
-from amr_fleet_manager.speed_policy import speed_cap
+from amr_fleet_manager.speed_policy import speed_cap, SafetyWatchdog
 from amr_fleet_manager.robot_common import (
     MUTEX_CLEAR, MUTEX_WAIT, MUTEX_REROUTE, MUTEX_PARKED,
 )
@@ -36,6 +36,9 @@ class WaypointNavNode(Node):
         # Max linear speed (m/s) while safety_fallback reports SLOW (something ahead within its slow
         # zone). 0 disables. Note: reservation windows still assume the full robot_speed.
         self.declare_parameter('slow_zone_speed', 0.25)
+        # Fail-safe: if the safety channel (emergency_stop topic, published on every LiDAR scan) is silent
+        # for this many seconds -- dead sensor, dead bridge, graph not yet discovered -- hold still. 0 disables.
+        self.declare_parameter('safety_timeout_sec', 0.0)
 
         self.offset_x = self.get_parameter('spawn_offset_x').value
         self.offset_y = self.get_parameter('spawn_offset_y').value
@@ -48,6 +51,7 @@ class WaypointNavNode(Node):
         self.slow_zone_speed = self.get_parameter('slow_zone_speed').value
         self.safety_state = 'CLEAR'
         self.goal_gate = GoalGate()
+        self.safety_watchdog = SafetyWatchdog(self.get_parameter('safety_timeout_sec').value, time.time())
 
         self.current_x = 0.0
         self.current_y = 0.0
@@ -119,6 +123,7 @@ class WaypointNavNode(Node):
     def emergency_stop_cb(self, msg: String):
         self.emergency_stop = (msg.data == "STOP")
         self.safety_state = msg.data
+        self.safety_watchdog.heard(time.time())
         if not self.emergency_stop:
             self.estop_timer.update(False, time.time())
             self.estop_turnout = False
@@ -145,6 +150,15 @@ class WaypointNavNode(Node):
 
     def control_loop(self):
         twist = Twist()
+
+        if self.safety_watchdog.silent(time.time()):
+            # No safety message for safety_timeout_sec: 'no STOP' cannot be read as 'clear' when the stop
+            # channel may be dead. Deliberately no reroute logic here: a dead sensor is not an obstacle.
+            self.get_logger().warn(
+                f"Safety channel silent > {self.safety_watchdog.timeout_sec}s; holding still.",
+                throttle_duration_sec=5.0)
+            self.cmd_vel_pub.publish(twist)
+            return
 
         if self.emergency_stop:
             # Highest-priority check, before anything else -- including a

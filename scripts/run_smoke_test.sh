@@ -18,6 +18,8 @@ mkdir -p "$HOME/smoke_logs"
 python "$REPO/scripts/smoke_odom.py" record --duration "$DURATION" --out /tmp/smoke_odom.csv > /tmp/rec.log 2>&1 &
 REC=$!
 sleep 2
+# With the fake LiDAR on, arm the fail-safe (hold still if the safety channel goes silent).
+if [ "$LIDAR" = "1" ]; then export SAFETY_TIMEOUT_SEC="${SAFETY_TIMEOUT_SEC:-2.0}"; fi
 ros2 launch amr_fleet_manager mutex_smoke.launch.py > /tmp/smoke_launch.log 2>&1 &
 LAUNCH=$!
 # LIDAR=1 adds a geometry-driven fake LiDAR so safety_fallback / the e-stop reroute actually run.
@@ -41,3 +43,4 @@ echo "reroute events: $(grep -ci 'rerouting around' /tmp/smoke_launch.log)   'no
 echo "=== separation ==="
 python "$REPO/scripts/smoke_odom.py" analyze --csv /tmp/smoke_odom.csv
 echo "e-stop engagements: $(grep -c 'EMERGENCY STOP' /tmp/smoke_launch.log)   releases: $(grep -c 'releasing emergency stop' /tmp/smoke_launch.log)"
+echo "safety-silent warnings: $(grep -c 'Safety channel silent' /tmp/smoke_launch.log)"
