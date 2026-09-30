@@ -3,11 +3,22 @@
 # Runs mutex_smoke.launch.py under ROS 2 (RoboStack env). The recorder stops itself, so nothing
 # depends on signals reaching background jobs. Logs go to ~/smoke_logs/<label>.*
 DURATION="${1:-40}"; LABEL="${2:-run}"
+# One smoke run at a time: runs share /tmp files, so overlapping runs corrupt each other.
+LOCK=/tmp/smoke_lock
+if ! mkdir "$LOCK" 2>/dev/null; then
+  OLD="$(cat "$LOCK/pid" 2>/dev/null)"
+  if [ -n "$OLD" ] && kill -0 "$OLD" 2>/dev/null; then echo "ABORT: another smoke run is active (pid $OLD)"; exit 75; fi
+  rm -rf "$LOCK"; mkdir "$LOCK" || exit 1
+fi
+echo $$ > "$LOCK/pid"
+trap 'rm -rf "$LOCK"' EXIT
 REPO="$HOME/amr_fleet_manager"
 unset VIRTUAL_ENV PYTHONPATH PYTHONHOME
 eval "$(micromamba shell hook --shell bash)"
 micromamba activate ros_jazzy || { echo "cannot activate ros_jazzy"; exit 1; }
 source "$HOME/ros_ws/install/setup.bash" || { echo "cannot source ros_ws install"; exit 1; }
+# Own DDS domain: stray nodes from earlier interrupted runs (default domain 0) cannot reach this run.
+export ROS_DOMAIN_ID="${SMOKE_DOMAIN_ID:-61}"
 echo "executables installed: $(ros2 pkg executables amr_fleet_manager | wc -l)"
 
 STRAYS="ros2 launch amr_fleet_manager|ros2 bag record|install/amr_fleet_manager/lib|smoke_odom.py|sim_lidar.py"

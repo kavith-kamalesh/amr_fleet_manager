@@ -2,6 +2,9 @@
 # Usage: [SCENARIO=crossing] [LIDAR=1] [REROUTE_WAIT_SEC=2] ./scripts/repeat_smoke.sh N duration_sec label
 # Runs the ROS smoke test N times, one after another, and prints one summary line per run.
 N="${1:-5}"; DUR="${2:-60}"; LABEL="${3:-rep}"
+if [ -d /tmp/smoke_lock ] && kill -0 "$(cat /tmp/smoke_lock/pid 2>/dev/null)" 2>/dev/null; then
+  echo "ABORT: a smoke run is already active (pid $(cat /tmp/smoke_lock/pid))"; exit 75
+fi
 REPO="$HOME/amr_fleet_manager"; PY="$REPO/.venv/bin/python"
 for i in $(seq 1 "$N"); do
   "$REPO/scripts/run_smoke_test.sh" "$DUR" "${LABEL}_$i" > /dev/null 2>&1
