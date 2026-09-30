@@ -26,7 +26,8 @@ def generate_launch_description():
                                         'block_expiry_sec': float(os.environ.get('BLOCK_EXPIRY_SEC', '5.0'))}]))
         ld.add_action(Node(package='amr_fleet_manager', executable='spatial_mutex',
                            name='spatial_mutex', namespace=ns, output='screen',
-                           parameters=[{'robot_id': c['id'], 'priority': c['priority']}]))
+                           parameters=[{'robot_id': c['id'], 'priority': c['priority'],
+                                        'reroute_wait_threshold_sec': float(os.environ.get('REROUTE_WAIT_SEC', '2.0'))}]))
         ld.add_action(Node(package='amr_fleet_manager', executable='safety_fallback',
                            name='safety_supervisor', namespace=ns, output='screen',
                            parameters=[{'require_scan': False}]))

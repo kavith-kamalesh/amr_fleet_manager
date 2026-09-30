@@ -101,6 +101,9 @@ REROUTE_WAIT_THRESHOLD_SEC = 2.0
 # reproduce the legacy never-expire behavior (pre commit 736f1c2).
 import os
 BLOCK_EXPIRY_SEC = float(os.environ.get("BLOCK_EXPIRY_SEC", "5.0"))
+# Seconds a robot waits on a conflict before replanning. Mirrors spatial_mutex reroute_wait_threshold_sec.
+# Default 2.0 = committed behavior; override with env REROUTE_WAIT_THRESHOLD_SEC for sweeps.
+REROUTE_WAIT_THRESHOLD_SEC = float(os.environ.get("REROUTE_WAIT_THRESHOLD_SEC", str(REROUTE_WAIT_THRESHOLD_SEC)))
 # 1 (default, legacy benchmark behavior): a geometric (proximity) block can trigger a reroute.
 # 0: only a reservation conflict with a peer can trigger a reroute, matching the
 #    deployed node, where a physical block causes an e-stop, not a reroute.
