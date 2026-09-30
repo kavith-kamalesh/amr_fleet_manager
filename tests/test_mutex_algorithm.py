@@ -63,6 +63,18 @@ def distance(p1, p2):
     return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
 
 
+# ---------------- Mirror of spatial_mutex.py's windows_conflict ----------------
+# This is the one formula in spatial_mutex.py that had no mirror test
+# here yet -- everything else (priority aging, replay guard, neighbor
+# filter) already did. Added to close that gap, same style as the rest
+# of this file: reproduce the exact formula, verify it against
+# spatial_mutex.py's @staticmethod windows_conflict if you ever touch
+# either one.
+
+def windows_conflict(w1, w2):
+    return not (w1[1] < w2[0] or w2[1] < w1[0])
+
+
 # ================================ Tests ================================
 
 def test_equal_priority_tie_resolves_to_exactly_one_winner():
@@ -83,7 +95,7 @@ def test_priority_aging_eventually_overrides_a_higher_static_priority():
     must eventually win against a robot with higher base priority that
     hasn't had to wait at all -- this is what prevents starvation."""
     now = 100.0
-    low_priority_robot_wait_start = now - 30.0  # waited 30s
+    low_priority_robot_wait_start = now - 30.0
     low_eff = effective_priority(base_priority=0.1, wait_start_time=low_priority_robot_wait_start, now=now)
     high_eff = effective_priority(base_priority=0.9, wait_start_time=None, now=now)
 
@@ -110,10 +122,10 @@ def test_replay_of_same_sequence_number_is_rejected():
     def accepts(last_seq, incoming_seq):
         return last_seq is None or incoming_seq > last_seq
 
-    assert accepts(None, 1) is True          # first message from a new peer
-    assert accepts(5, 6) is True              # normal increment
-    assert accepts(5, 5) is False             # exact replay
-    assert accepts(5, 3) is False             # stale/out-of-order replay
+    assert accepts(None, 1) is True
+    assert accepts(5, 6) is True
+    assert accepts(5, 5) is False
+    assert accepts(5, 3) is False
     assert accepts(5, 4) is False
 
 
@@ -141,3 +153,26 @@ def test_neighbor_filter_excludes_a_genuinely_distant_peer():
 
     d = distance(edge_midpoint(self_edge), edge_midpoint(far_peer_edge))
     assert d > NEIGHBOR_RADIUS_M, "this peer should be far enough to be filtered"
+
+
+def test_disjoint_windows_no_conflict():
+    assert windows_conflict((0.0, 1.0), (2.0, 3.0)) is False
+    assert windows_conflict((2.0, 3.0), (0.0, 1.0)) is False
+
+
+def test_overlapping_windows_conflict():
+    assert windows_conflict((0.0, 2.0), (1.0, 3.0)) is True
+
+
+def test_touching_windows_conflict():
+    # boundary case: the comparison is strict '<', so equal endpoints
+    # count as a conflict, not as disjoint.
+    assert windows_conflict((0.0, 1.0), (1.0, 2.0)) is True
+
+
+def test_one_window_fully_inside_another():
+    assert windows_conflict((0.0, 10.0), (2.0, 3.0)) is True
+
+
+def test_identical_windows_conflict():
+    assert windows_conflict((5.0, 6.0), (5.0, 6.0)) is True

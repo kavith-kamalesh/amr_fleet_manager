@@ -1,0 +1,8 @@
+# Pure-Python deps for benchmarks, analysis scripts and tests (no ROS needed).
+# ROS 2 packages come from the ROS install (see package.xml), not pip.
+numpy==2.5.2
+scipy==1.18.1
+matplotlib==3.11.1
+rosbags==0.11.5
+psutil==7.2.2
+pytest==9.1.1
