@@ -2,22 +2,24 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
 
+from amr_fleet_manager.scenarios import SCENARIOS
+
 
 class CentralFleetManager(Node):
     """Task INTAKE only. Traffic negotiation is decentralized (spatial_mutex + safety supervisor)."""
 
-    # Goals are in the same world frame as spawn_offset (robot start + odom).
-    GOALS = {
-        'robot1': (3.0, 0.0),   # head-on with robot2 along y=0
-        'robot2': (1.0, 0.0),
-        'robot3': (2.0, 2.0),   # crossing traffic
-    }
-
     def __init__(self):
         super().__init__('central_fleet_manager')
+        # Goals are world coordinates (robot start + odom). See scenarios.py.
+        self.declare_parameter('scenario', 'swap')
+        scenario = self.get_parameter('scenario').value
+        if scenario not in SCENARIOS:
+            raise ValueError(f"unknown scenario {scenario!r}; choose from {sorted(SCENARIOS)}")
+        self.goals = SCENARIOS[scenario]
+        self.get_logger().info(f"scenario: {scenario}")
         self.pubs = {rid: self.create_publisher(PoseStamped, f'/{rid}/goal_pose', 10)
-                     for rid in self.GOALS}
-        self.pending = set(self.GOALS)
+                     for rid in self.goals}
+        self.pending = set(self.goals)
         self.timer = self.create_timer(1.0, self.dispatch_tasks)
         self.get_logger().info("Dispatcher up: sending each goal once its subscriber is discovered.")
 
@@ -26,7 +28,7 @@ class CentralFleetManager(Node):
             pub = self.pubs[rid]
             if pub.get_subscription_count() == 0:
                 continue
-            x, y = self.GOALS[rid]
+            x, y = self.goals[rid]
             msg = PoseStamped()
             msg.header.frame_id = 'map'
             msg.header.stamp = self.get_clock().now().to_msg()

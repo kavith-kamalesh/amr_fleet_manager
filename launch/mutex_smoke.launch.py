@@ -13,7 +13,8 @@ ROBOTS = [
 def generate_launch_description():
     ld = LaunchDescription()
     ld.add_action(Node(package='amr_fleet_manager', executable='central_dispatcher',
-                       name='central_dispatcher', output='screen'))
+                       name='central_dispatcher', output='screen',
+                       parameters=[{'scenario': os.environ.get('SCENARIO', 'swap')}]))
     for c in ROBOTS:
         ns = c['name']
         ld.add_action(Node(package='amr_fleet_manager', executable='sim_kinematic_robot',
