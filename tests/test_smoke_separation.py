@@ -32,3 +32,10 @@ def test_pair_breaches_counts_time_even_with_a_third_robot_interleaved():
     assert ("a", "c") not in secs
     assert abs(any_s - secs[("a", "b")]) < 1e-9
     assert abs(mins[("a", "b")] - 0.2) < 1e-9
+
+
+def test_cmd_state_buckets():
+    assert smoke_odom.cmd_state(0.0, 0.0) == "stop"
+    assert smoke_odom.cmd_state(0.0, 0.5) == "turn"
+    assert smoke_odom.cmd_state(0.2, 0.0) == "drive_slow"
+    assert smoke_odom.cmd_state(0.8, 0.0) == "drive"

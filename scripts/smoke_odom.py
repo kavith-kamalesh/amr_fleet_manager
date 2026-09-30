@@ -69,12 +69,32 @@ def pair_breaches(rows, threshold, step=0.1):
     return dict(seconds), min_d, any_s
 
 
+def cmd_state(v, w):
+    """Coarse motion state of a velocity command, so the recorder logs changes, not every message."""
+    if abs(v) < 0.01 and abs(w) < 0.01:
+        return "stop"
+    if abs(v) < 0.01:
+        return "turn"
+    return "drive_slow" if v <= 0.3 else "drive"
+
+
+def show_events(args):
+    with open(args.csv, newline="") as f:
+        rows = [(float(r["t"]), r["robot"], r["kind"], r["value"]) for r in csv.DictReader(f)]
+    for name in sorted({r[1] for r in rows}):
+        print(f"--- {name}")
+        for t, _, kind, value in [r for r in rows if r[1] == name][: args.limit]:
+            print(f"  {t:6.1f}s  {kind:10s} {value}")
+
+
 def record(args):
     import rclpy
     from nav_msgs.msg import Odometry
+    from geometry_msgs.msg import PoseStamped, Twist
+    from std_msgs.msg import String
     rclpy.init()
     node = rclpy.create_node("smoke_odom_recorder")
-    rows, t0 = [], time.monotonic()
+    rows, events, last_state, t0 = [], [], {}, time.monotonic()
 
     def make_cb(name):
         ox, oy = OFFSETS[name]
@@ -84,8 +104,26 @@ def record(args):
             rows.append((round(time.monotonic() - t0, 3), name, p.x + ox, p.y + oy))
         return cb
 
+    def ev(name, kind, value):
+        if last_state.get((name, kind)) != value:
+            last_state[(name, kind)] = value
+            events.append((round(time.monotonic() - t0, 3), name, kind, value))
+
+    def goal_cb(name):
+        return lambda m: ev(name, "goal_pose", f"{m.pose.position.x:.1f},{m.pose.position.y:.1f}")
+
+    def str_cb(name, kind):
+        return lambda m: ev(name, kind, m.data)
+
+    def cmd_cb(name):
+        return lambda m: ev(name, "cmd_vel", cmd_state(m.linear.x, m.angular.z))
+
     for name in OFFSETS:
         node.create_subscription(Odometry, f"/{name}/odom", make_cb(name), 10)
+        node.create_subscription(PoseStamped, f"/{name}/goal_pose", goal_cb(name), 10)
+        node.create_subscription(String, f"/{name}/mutex_clearance", str_cb(name, "mutex"), 10)
+        node.create_subscription(String, f"/{name}/emergency_stop", str_cb(name, "safety"), 10)
+        node.create_subscription(Twist, f"/{name}/cmd_vel", cmd_cb(name), 10)
     end = t0 + args.duration
     while time.monotonic() < end:
         rclpy.spin_once(node, timeout_sec=0.1)
@@ -96,6 +134,12 @@ def record(args):
         w.writerow(["t", "robot", "x", "y"])
         w.writerows(rows)
     print(f"recorded {len(rows)} samples -> {args.out}")
+    ev_path = args.out.replace(".csv", "_events.csv")
+    with open(ev_path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["t", "robot", "kind", "value"])
+        w.writerows(events)
+    print(f"recorded {len(events)} state changes -> {ev_path}")
 
 
 def analyze(args):
@@ -128,5 +172,8 @@ if __name__ == "__main__":
     p2 = sub.add_parser("analyze")
     p2.add_argument("--csv", default="/tmp/smoke_odom.csv")
     p2.add_argument("--radius", type=float, default=0.35)
+    p3 = sub.add_parser("events")
+    p3.add_argument("--csv", default="/tmp/smoke_odom_events.csv")
+    p3.add_argument("--limit", type=int, default=15)
     args = ap.parse_args()
-    (record if args.cmd == "record" else analyze)(args)
+    {"record": record, "analyze": analyze, "events": show_events}[args.cmd](args)
