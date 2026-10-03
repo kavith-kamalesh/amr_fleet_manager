@@ -36,6 +36,7 @@ setup(
             'dynamic_obstacle_layer = amr_fleet_manager.dynamic_obstacle_layer:main',
             'spatial_mutex = amr_fleet_manager.spatial_mutex:main',
             'safety_fallback = amr_fleet_manager.safety_fallback:main',
+            'pibt_fleet_node = amr_fleet_manager.pibt_fleet_node:main',
             'lidar_blindspot_fallback = amr_fleet_manager.lidar_blindspot_fallback:main',
         ],
     },

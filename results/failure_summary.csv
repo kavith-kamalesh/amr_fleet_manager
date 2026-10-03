@@ -1,0 +1,9 @@
+n_robots,case,trials,success_pct,collisions,mean_completion,mean_unfinished
+24,central_live,50,98.0,0,8.596205533596837,0.02
+24,central_dead,50,30.0,0,50.01584980237154,2.4
+24,decentral,50,94.0,0,9.758695652173913,0.06
+24,central_dead_no_breakdown,50,66.0,0,31.085,1.36
+48,central_live,50,92.0,0,9.508834412580944,0.1
+48,central_dead,50,0.0,0,156.52332099907494,17.66
+48,decentral,50,98.0,0,9.687668825161888,0.02
+48,central_dead_no_breakdown,50,2.0,0,147.63916666666665,17
