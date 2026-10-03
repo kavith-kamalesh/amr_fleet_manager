@@ -7,3 +7,4 @@ install/
 log/
 *.pt
 *.onnx
+*.bak
